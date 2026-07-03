@@ -29,6 +29,12 @@ const guardianAccessEventSchema = new Schema(
       ref: 'GuardianFirstAccessChallenge',
       default: null,
     },
+    recoveryChallengeId: {
+      type: Schema.Types.ObjectId,
+      ref: 'GuardianPinRecoveryChallenge',
+      default: null,
+      index: true,
+    },
     studentId: {
       type: Schema.Types.ObjectId,
       ref: 'Student',

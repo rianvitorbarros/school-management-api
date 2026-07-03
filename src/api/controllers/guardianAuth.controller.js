@@ -105,6 +105,45 @@ class GuardianAuthController {
     }
   }
 
+  async startPinRecovery(req, res) {
+    try {
+      const result = await guardianAuthService.startPinRecovery({
+        cpf: req.body?.cpf,
+        studentFullName: req.body?.studentFullName,
+        studentBirthDate: req.body?.studentBirthDate,
+        guardianBirthDate: req.body?.guardianBirthDate,
+        schoolPublicId: req.body?.schoolPublicId,
+        requestMeta: buildRequestMeta(req),
+      });
+
+      return res.status(200).json(result);
+    } catch (error) {
+      return sendError(
+        res,
+        error,
+        'Nao foi possivel confirmar os dados informados. Revise e tente novamente ou procure a escola.'
+      );
+    }
+  }
+
+  async completePinRecovery(req, res) {
+    try {
+      const result = await guardianAuthService.completePinRecovery({
+        challengeId: req.body?.challengeId,
+        verificationToken: req.body?.verificationToken,
+        newPin: req.body?.newPin,
+      });
+
+      return res.status(200).json(result);
+    } catch (error) {
+      return sendError(
+        res,
+        error,
+        'Nao foi possivel concluir a recuperacao do PIN.'
+      );
+    }
+  }
+
   async login(req, res) {
     try {
       const result = await guardianAuthService.login({

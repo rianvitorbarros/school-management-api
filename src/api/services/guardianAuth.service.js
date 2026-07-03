@@ -19,6 +19,8 @@ const GuardianAccessAccount = require('../models/guardianAccessAccount.model');
 const GuardianAccessLink = require('../models/guardianAccessLink.model');
 const GuardianAccessEvent = require('../models/guardianAccessEvent.model');
 const GuardianFirstAccessChallenge = require('../models/guardianFirstAccessChallenge.model');
+const GuardianPinRecoveryChallenge = require('../models/guardianPinRecoveryChallenge.model');
+const GuardianPinRecoveryRateLimit = require('../models/guardianPinRecoveryRateLimit.model');
 const invoiceService = require('./invoice.service');
 const tutorFinancialScoreService = require('./tutorFinancialScore.service');
 const {
@@ -48,6 +50,15 @@ const LOGIN_BLOCK_MINUTES = 15;
 const MAX_LOGIN_FAILURES = 5;
 const MAX_CHALLENGE_CPF_FAILURES = 3;
 const PIN_SALT_ROUNDS = 10;
+const PIN_RECOVERY_TTL_MINUTES = 15;
+const PIN_RECOVERY_WINDOW_MINUTES = 15;
+const MAX_PIN_RECOVERY_CHALLENGE_FAILURES = 3;
+const MAX_PIN_RECOVERY_STARTS_PER_CPF = 5;
+const MAX_PIN_RECOVERY_STARTS_PER_IP = 5;
+const PIN_RECOVERY_GENERIC_MESSAGE =
+  'Nao foi possivel confirmar os dados informados. Revise e tente novamente ou procure a escola.';
+const PIN_RECOVERY_LIMIT_MESSAGE =
+  'Nao foi possivel continuar agora. Aguarde alguns minutos e tente novamente.';
 
 class GuardianAuthService {
   constructor(options = {}) {
@@ -73,6 +84,10 @@ class GuardianAuthService {
       options.GuardianAccessEventModel || GuardianAccessEvent;
     this.GuardianFirstAccessChallengeModel =
       options.GuardianFirstAccessChallengeModel || GuardianFirstAccessChallenge;
+    this.GuardianPinRecoveryChallengeModel =
+      options.GuardianPinRecoveryChallengeModel || GuardianPinRecoveryChallenge;
+    this.GuardianPinRecoveryRateLimitModel =
+      options.GuardianPinRecoveryRateLimitModel || GuardianPinRecoveryRateLimit;
     this.invoiceService = options.invoiceService || invoiceService;
     this.tutorFinancialScoreService =
       options.tutorFinancialScoreService || tutorFinancialScoreService;
@@ -108,6 +123,23 @@ class GuardianAuthService {
   _hashValue(value) {
     return this.crypto
       .createHash('sha256')
+      .update(String(value || ''))
+      .digest('hex');
+  }
+
+  _hashSensitiveValue(value) {
+    const secret =
+      process.env.GUARDIAN_RECOVERY_HASH_SECRET || this.guardianJwtSecret;
+
+    if (!secret) {
+      throw this._createHttpError(
+        'Segredo de seguranca da recuperacao nao configurado.',
+        500
+      );
+    }
+
+    return this.crypto
+      .createHmac('sha256', secret)
       .update(String(value || ''))
       .digest('hex');
   }
@@ -197,6 +229,7 @@ class GuardianAuthService {
     accountId = null,
     linkId = null,
     challengeId = null,
+    recoveryChallengeId = null,
     studentId = null,
     tutorId = null,
     actorType,
@@ -211,6 +244,7 @@ class GuardianAuthService {
       accountId,
       linkId,
       challengeId,
+      recoveryChallengeId,
       studentId,
       tutorId,
       actorType,
@@ -1713,50 +1747,30 @@ class GuardianAuthService {
       $or: [{ tutorId: tutor._id }, { identifierNormalized }],
     }).select('+pinHash');
 
-    if (account && String(account.tutorId) !== String(tutor._id)) {
+    if (account) {
       throw this._createHttpError(
-        'CPF duplicado em contas de responsavel na mesma escola.',
-        409
+        String(account.tutorId) !== String(tutor._id)
+          ? 'CPF duplicado em contas de responsavel na mesma escola.'
+          : 'Ja existe uma conta para este responsavel. Use a recuperacao de PIN.',
+        409,
+        { reason: 'pin_recovery_required' }
       );
     }
 
-    if (!account) {
-      return this.GuardianAccessAccountModel.create({
-        school_id: schoolId,
-        tutorId: tutor._id,
-        identifierType: 'cpf',
-        identifierNormalized,
-        identifierMasked,
-        pinHash,
-        status: 'active',
-        activatedAt: this._getNow(),
-        pinUpdatedAt: this._getNow(),
-        failedLoginCount: 0,
-        blockedUntil: null,
-        lastFailedAt: null,
-      });
-    }
-
-    if (account.status === 'inactive') {
-      throw this._createHttpError(
-        'Conta de responsavel inativa. Contate a escola.',
-        403
-      );
-    }
-
-    account.identifierType = 'cpf';
-    account.identifierNormalized = identifierNormalized;
-    account.identifierMasked = identifierMasked;
-    account.pinHash = pinHash;
-    account.status = 'active';
-    account.activatedAt = account.activatedAt || this._getNow();
-    account.pinUpdatedAt = this._getNow();
-    account.failedLoginCount = 0;
-    account.blockedUntil = null;
-    account.lastFailedAt = null;
-    await account.save();
-
-    return account;
+    return this.GuardianAccessAccountModel.create({
+      school_id: schoolId,
+      tutorId: tutor._id,
+      identifierType: 'cpf',
+      identifierNormalized,
+      identifierMasked,
+      pinHash,
+      status: 'active',
+      activatedAt: this._getNow(),
+      pinUpdatedAt: this._getNow(),
+      failedLoginCount: 0,
+      blockedUntil: null,
+      lastFailedAt: null,
+    });
   }
 
   async _syncAccountLinksForTutor({
@@ -2154,6 +2168,7 @@ class GuardianAuthService {
     const existingAccount = await this._findExistingGuardianAccountForTutor({
       schoolId: challenge.school_id,
       tutor,
+      includePinHash: true,
     });
     const existingLink = existingAccount
       ? await this.GuardianAccessLinkModel.findOne({
@@ -2163,6 +2178,30 @@ class GuardianAuthService {
           status: 'active',
         })
       : null;
+
+    if (
+      existingAccount &&
+      (!existingAccount.pinHash || existingAccount.status === 'pending')
+    ) {
+      challenge.stage = 'completed';
+      challenge.completedAt = this._getNow();
+      challenge.verificationTokenHash = null;
+      await challenge.save();
+
+      throw this._createHttpError(
+        'Use a opcao Esqueci meu PIN para recuperar este acesso.',
+        409,
+        { reason: 'pin_recovery_required' }
+      );
+    }
+
+    if (existingAccount?.status === 'inactive') {
+      throw this._createHttpError(
+        'Este acesso esta indisponivel. Procure a escola.',
+        403,
+        { reason: 'guardian_account_inactive' }
+      );
+    }
 
     challenge.selectedTutorId = tutor._id;
     challenge.failedCpfAttempts = 0;
@@ -2235,6 +2274,559 @@ class GuardianAuthService {
         ? 'Conta existente encontrada. Informe o PIN atual para vincular este aluno.'
         : 'Responsavel validado com sucesso. Crie o PIN para concluir o acesso.',
     };
+  }
+
+  async _consumePinRecoveryRateLimit({ scope, keyHash, limit }) {
+    if (!keyHash) return { count: 0, blocked: false };
+
+    const now = this._getNow();
+    const windowMs = PIN_RECOVERY_WINDOW_MINUTES * 60 * 1000;
+    const windowStartedAt = new Date(
+      Math.floor(now.getTime() / windowMs) * windowMs
+    );
+    const expiresAt = new Date(windowStartedAt.getTime() + windowMs * 2);
+    const filter = { scope, keyHash, windowStartedAt };
+    const update = {
+      $inc: { count: 1 },
+      $setOnInsert: { expiresAt },
+    };
+
+    let record;
+    try {
+      record = await this.GuardianPinRecoveryRateLimitModel.findOneAndUpdate(
+        filter,
+        update,
+        { new: true, upsert: true, setDefaultsOnInsert: true }
+      );
+    } catch (error) {
+      if (error?.code !== 11000) throw error;
+      record = await this.GuardianPinRecoveryRateLimitModel.findOneAndUpdate(
+        filter,
+        update,
+        { new: true }
+      );
+    }
+
+    const count = Number(record?.count || 0);
+    return { count, blocked: count > limit };
+  }
+
+  async _assertPinRecoveryRateLimit({ cpfHash, ipHash, schoolId = null }) {
+    const cpfLimit = await this._consumePinRecoveryRateLimit({
+      scope: 'cpf',
+      keyHash: cpfHash,
+      limit: MAX_PIN_RECOVERY_STARTS_PER_CPF,
+    });
+    const ipLimit = ipHash
+      ? await this._consumePinRecoveryRateLimit({
+          scope: 'ip',
+          keyHash: ipHash,
+          limit: MAX_PIN_RECOVERY_STARTS_PER_IP,
+        })
+      : { count: 0, blocked: false };
+
+    if (!cpfLimit.blocked && !ipLimit.blocked) {
+      return;
+    }
+
+    if (schoolId) {
+      await this._registerEventBestEffort('pin-recovery.rate-limit.event-failed', {
+        schoolId,
+        actorType: 'public',
+        eventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_RECOVERY_BLOCKED,
+        metadata: {
+          reason: 'rate_limit',
+          scope: cpfLimit.blocked ? 'identity' : 'ip',
+        },
+      });
+    }
+
+    throw this._createHttpError(PIN_RECOVERY_LIMIT_MESSAGE, 429, {
+      reason: 'pin_recovery_rate_limited',
+    });
+  }
+
+  async _findStudentsForPinRecovery({
+    schoolId = null,
+    studentFullName,
+    studentBirthDate,
+  }) {
+    const fullNameNormalized = normalizeName(studentFullName);
+    const birthDateKey = buildBirthDateKey(studentBirthDate);
+    const parsedBirthDate = parseDateInput(studentBirthDate);
+
+    if (!fullNameNormalized || !birthDateKey || !parsedBirthDate) {
+      return [];
+    }
+
+    const indexedFilter = {
+      fullNameNormalized,
+      birthDateKey,
+      isActive: true,
+    };
+    if (schoolId) indexedFilter.school_id = schoolId;
+
+    const indexedMatches = await this.StudentModel.find(indexedFilter)
+      .select(
+        '_id fullName birthDate fullNameNormalized birthDateKey school_id financialTutorId tutors isActive'
+      )
+      .lean();
+
+    if (indexedMatches.length) return indexedMatches;
+
+    const dayStart = new Date(
+      Date.UTC(
+        parsedBirthDate.getUTCFullYear(),
+        parsedBirthDate.getUTCMonth(),
+        parsedBirthDate.getUTCDate()
+      )
+    );
+    const fallbackFilter = {
+      birthDate: {
+        $gte: dayStart,
+        $lt: new Date(dayStart.getTime() + 24 * 60 * 60 * 1000),
+      },
+      isActive: true,
+    };
+    if (schoolId) fallbackFilter.school_id = schoolId;
+
+    const candidates = await this.StudentModel.find(fallbackFilter)
+      .select(
+        '_id fullName birthDate fullNameNormalized birthDateKey school_id financialTutorId tutors isActive'
+      )
+      .lean();
+
+    return candidates.filter(
+      (student) =>
+        (student.fullNameNormalized || normalizeName(student.fullName)) ===
+          fullNameNormalized &&
+        (student.birthDateKey || buildBirthDateKey(student.birthDate)) ===
+          birthDateKey
+    );
+  }
+
+  async _findPinRecoveryMatches({
+    cpfNormalized,
+    studentFullName,
+    studentBirthDate,
+    guardianBirthDate,
+    school = null,
+  }) {
+    const guardianBirthDateKey = buildBirthDateKey(guardianBirthDate);
+    if (!guardianBirthDateKey) return [];
+
+    const students = await this._findStudentsForPinRecovery({
+      schoolId: school?._id || null,
+      studentFullName,
+      studentBirthDate,
+    });
+    const matches = [];
+
+    for (const student of students) {
+      const schoolId = student.school_id;
+      const relationshipByTutorId = this._buildTutorRelationshipMap(student);
+      const tutorIds = [...relationshipByTutorId.keys()];
+      if (!schoolId || !tutorIds.length) continue;
+
+      const tutors = await this.TutorModel.find({
+        _id: { $in: tutorIds },
+        school_id: schoolId,
+      })
+        .select('_id fullName birthDate cpf cpfNormalized school_id')
+        .lean();
+
+      for (const tutor of tutors) {
+        const tutorCpf = this._getEffectiveTutorCpfNormalized(tutor);
+        if (
+          tutorCpf !== cpfNormalized ||
+          buildBirthDateKey(tutor.birthDate) !== guardianBirthDateKey
+        ) {
+          continue;
+        }
+
+        const account =
+          await this.GuardianAccessAccountModel.findOne({
+            school_id: schoolId,
+            tutorId: tutor._id,
+            identifierNormalized: cpfNormalized,
+          }).select('+pinHash');
+
+        if (!account || account.status === 'inactive') continue;
+
+        matches.push({
+          schoolId: String(schoolId),
+          student,
+          tutor,
+          account,
+          relationship:
+            relationshipByTutorId.get(String(tutor._id)) || 'Responsavel',
+        });
+      }
+    }
+
+    return matches;
+  }
+
+  async _failPinRecoveryStart(challenge, reason) {
+    challenge.stage = 'failed';
+    challenge.failedAttempts = Number(challenge.failedAttempts || 0) + 1;
+    await challenge.save();
+
+    if (challenge.school_id) {
+      await this._registerEventBestEffort('pin-recovery.start-failed.event-failed', {
+        schoolId: challenge.school_id,
+        accountId: challenge.guardianAccessAccountId || null,
+        recoveryChallengeId: challenge._id,
+        studentId: challenge.studentId || null,
+        tutorId: challenge.tutorId || null,
+        actorType: 'public',
+        eventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_RECOVERY_FAILED,
+        metadata: { reason },
+      });
+    }
+
+    throw this._createHttpError(PIN_RECOVERY_GENERIC_MESSAGE, 400, {
+      reason: 'pin_recovery_identity_not_confirmed',
+    });
+  }
+
+  async startPinRecovery({
+    cpf,
+    studentFullName,
+    studentBirthDate,
+    guardianBirthDate,
+    schoolPublicId,
+    requestMeta = {},
+  }) {
+    const cpfDigits = String(cpf || '').replace(/\D/g, '');
+    const cpfNormalized = normalizeCpf(cpfDigits);
+    const cpfHash = this._hashSensitiveValue(cpfDigits || 'invalid');
+    const ipHash = requestMeta.ip
+      ? this._hashSensitiveValue(requestMeta.ip)
+      : null;
+    const userAgentHash = requestMeta.userAgent
+      ? this._hashSensitiveValue(requestMeta.userAgent)
+      : null;
+    let school = null;
+
+    if ((schoolPublicId || '').trim()) {
+      try {
+        school = await this.resolveSchoolByPublicIdentifier(schoolPublicId);
+      } catch (_) {
+        school = null;
+      }
+    }
+
+    await this._assertPinRecoveryRateLimit({
+      cpfHash,
+      ipHash,
+      schoolId: school?._id || null,
+    });
+
+    const now = this._getNow();
+    const challenge = await this.GuardianPinRecoveryChallengeModel.create({
+      school_id: school?._id || null,
+      stage: 'attempted',
+      failedAttempts: 0,
+      expiresAt: this._addMinutes(now, PIN_RECOVERY_TTL_MINUTES),
+      ipHash,
+      cpfHash,
+      userAgentHash,
+    });
+
+    if (
+      !cpfNormalized ||
+      !isValidCpf(cpfNormalized) ||
+      !normalizeName(studentFullName) ||
+      !buildBirthDateKey(studentBirthDate) ||
+      !buildBirthDateKey(guardianBirthDate) ||
+      ((schoolPublicId || '').trim() && !school)
+    ) {
+      return this._failPinRecoveryStart(challenge, 'identity_mismatch');
+    }
+
+    const matches = await this._findPinRecoveryMatches({
+      cpfNormalized,
+      studentFullName,
+      studentBirthDate,
+      guardianBirthDate,
+      school,
+    });
+
+    const schoolIds = [...new Set(matches.map((match) => match.schoolId))];
+
+    if (!school && schoolIds.length > 1) {
+      const options = await this._listSchoolSummariesByIds(schoolIds);
+      challenge.stage = 'failed';
+      await challenge.save();
+
+      return {
+        schoolSelectionRequired: true,
+        options: options.map((option) => ({
+          schoolPublicId: option.schoolPublicId,
+          schoolName: option.schoolName,
+        })),
+      };
+    }
+
+    if (matches.length !== 1) {
+      if (!challenge.school_id && schoolIds.length === 1) {
+        challenge.school_id = schoolIds[0];
+      }
+      return this._failPinRecoveryStart(challenge, 'identity_mismatch');
+    }
+
+    const [match] = matches;
+    const verificationToken = this._randomToken();
+
+    challenge.school_id = match.account.school_id;
+    challenge.guardianAccessAccountId = match.account._id;
+    challenge.studentId = match.student._id;
+    challenge.tutorId = match.tutor._id;
+    challenge.verificationTokenHash = this._hashValue(verificationToken);
+    challenge.stage = 'awaiting_pin';
+    challenge.failedAttempts = 0;
+    await challenge.save();
+
+    await this._registerEventBestEffort('pin-recovery.started.event-failed', {
+      schoolId: match.account.school_id,
+      accountId: match.account._id,
+      recoveryChallengeId: challenge._id,
+      studentId: match.student._id,
+      tutorId: match.tutor._id,
+      actorType: 'public',
+      eventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_RECOVERY_STARTED,
+      metadata: { expiresInSeconds: PIN_RECOVERY_TTL_MINUTES * 60 },
+    });
+
+    return {
+      challengeId: String(challenge._id),
+      verificationToken,
+      expiresInSeconds: PIN_RECOVERY_TTL_MINUTES * 60,
+      schoolSelectionRequired: false,
+    };
+  }
+
+  async _registerPinRecoveryChallengeFailure(challenge, reason) {
+    challenge.failedAttempts = Number(challenge.failedAttempts || 0) + 1;
+    const blocked =
+      challenge.failedAttempts >= MAX_PIN_RECOVERY_CHALLENGE_FAILURES;
+    challenge.stage = blocked ? 'blocked' : challenge.stage;
+    await challenge.save();
+
+    if (challenge.school_id) {
+      await this._registerEventBestEffort(
+        'pin-recovery.challenge-failed.event-failed',
+        {
+          schoolId: challenge.school_id,
+          accountId: challenge.guardianAccessAccountId || null,
+          recoveryChallengeId: challenge._id,
+          studentId: challenge.studentId || null,
+          tutorId: challenge.tutorId || null,
+          actorType: 'public',
+          eventType: blocked
+            ? GUARDIAN_ACCESS_EVENT_TYPES.PIN_RECOVERY_BLOCKED
+            : GUARDIAN_ACCESS_EVENT_TYPES.PIN_RECOVERY_FAILED,
+          metadata: {
+            reason,
+            attempts: challenge.failedAttempts,
+          },
+        }
+      );
+    }
+
+    return blocked;
+  }
+
+  async completePinRecovery({ challengeId, verificationToken, newPin }) {
+    this._assertValidPin(newPin);
+
+    if (!challengeId || !verificationToken) {
+      throw this._createHttpError(PIN_RECOVERY_GENERIC_MESSAGE, 400, {
+        reason: 'pin_recovery_challenge_invalid',
+      });
+    }
+
+    const challengeQuery =
+      this.GuardianPinRecoveryChallengeModel.findById(challengeId);
+    challengeQuery.select('+verificationTokenHash');
+    const challenge = await challengeQuery;
+
+    if (!challenge) {
+      throw this._createHttpError(PIN_RECOVERY_GENERIC_MESSAGE, 404, {
+        reason: 'pin_recovery_challenge_invalid',
+      });
+    }
+
+    const now = this._getNow();
+    if (challenge.expiresAt && new Date(challenge.expiresAt) <= now) {
+      challenge.stage = 'expired';
+      await challenge.save();
+      throw this._createHttpError('O prazo para recuperacao expirou.', 410, {
+        reason: 'pin_recovery_challenge_expired',
+      });
+    }
+
+    if (challenge.stage === 'blocked') {
+      throw this._createHttpError(PIN_RECOVERY_LIMIT_MESSAGE, 429, {
+        reason: 'pin_recovery_rate_limited',
+      });
+    }
+
+    if (challenge.stage !== 'awaiting_pin') {
+      throw this._createHttpError(PIN_RECOVERY_GENERIC_MESSAGE, 409, {
+        reason: 'pin_recovery_challenge_used',
+      });
+    }
+
+    const submittedTokenHash = this._hashValue(verificationToken);
+    const storedTokenHash = String(challenge.verificationTokenHash || '');
+    const tokenMatches =
+      submittedTokenHash.length === storedTokenHash.length &&
+      this.crypto.timingSafeEqual(
+        Buffer.from(submittedTokenHash),
+        Buffer.from(storedTokenHash)
+      );
+
+    if (!tokenMatches) {
+      const blocked = await this._registerPinRecoveryChallengeFailure(
+        challenge,
+        'invalid_verification_token'
+      );
+      throw this._createHttpError(
+        blocked ? PIN_RECOVERY_LIMIT_MESSAGE : PIN_RECOVERY_GENERIC_MESSAGE,
+        blocked ? 429 : 401,
+        {
+          reason: blocked
+            ? 'pin_recovery_rate_limited'
+            : 'pin_recovery_challenge_invalid',
+        }
+      );
+    }
+
+    const claimedChallenge =
+      await this.GuardianPinRecoveryChallengeModel.findOneAndUpdate(
+        {
+          _id: challenge._id,
+          stage: 'awaiting_pin',
+          verificationTokenHash: submittedTokenHash,
+          expiresAt: { $gt: now },
+        },
+        { $set: { stage: 'processing' } },
+        { new: true }
+      ).select('+verificationTokenHash');
+
+    if (!claimedChallenge) {
+      throw this._createHttpError(PIN_RECOVERY_GENERIC_MESSAGE, 409, {
+        reason: 'pin_recovery_challenge_used',
+      });
+    }
+
+    try {
+      const account =
+        await this.GuardianAccessAccountModel.findOne({
+          _id: claimedChallenge.guardianAccessAccountId,
+          school_id: claimedChallenge.school_id,
+          tutorId: claimedChallenge.tutorId,
+        }).select('+pinHash');
+      const tutor = await this.TutorModel.findOne({
+        _id: claimedChallenge.tutorId,
+        school_id: claimedChallenge.school_id,
+      })
+        .select('_id cpf cpfNormalized school_id')
+        .lean();
+      const student = await this.StudentModel.findOne({
+        _id: claimedChallenge.studentId,
+        school_id: claimedChallenge.school_id,
+        isActive: true,
+        $or: [
+          { financialTutorId: claimedChallenge.tutorId },
+          { 'tutors.tutorId': claimedChallenge.tutorId },
+        ],
+      })
+        .select('_id school_id')
+        .lean();
+
+      const accountCpfHash = account?.identifierNormalized
+        ? this._hashSensitiveValue(account.identifierNormalized)
+        : null;
+      const tutorCpf = tutor
+        ? this._getEffectiveTutorCpfNormalized(tutor)
+        : null;
+
+      if (
+        !account ||
+        !tutor ||
+        !student ||
+        account.status === 'inactive' ||
+        tutorCpf !== account.identifierNormalized ||
+        accountCpfHash !== claimedChallenge.cpfHash
+      ) {
+        throw this._createHttpError(PIN_RECOVERY_GENERIC_MESSAGE, 409, {
+          reason: 'pin_recovery_scope_changed',
+        });
+      }
+
+      account.pinHash = await this.bcrypt.hash(
+        String(newPin),
+        PIN_SALT_ROUNDS
+      );
+      account.status = 'active';
+      account.activatedAt = account.activatedAt || now;
+      account.pinUpdatedAt = now;
+      account.failedLoginCount = 0;
+      account.lastFailedAt = null;
+      account.blockedUntil = null;
+      account.tokenVersion = Number(account.tokenVersion || 0) + 1;
+      await account.save();
+
+      claimedChallenge.stage = 'completed';
+      claimedChallenge.completedAt = now;
+      claimedChallenge.verificationTokenHash = null;
+      await claimedChallenge.save();
+
+      await this._registerEventBestEffort(
+        'pin-recovery.succeeded.event-failed',
+        {
+          schoolId: account.school_id,
+          accountId: account._id,
+          recoveryChallengeId: claimedChallenge._id,
+          studentId: claimedChallenge.studentId,
+          tutorId: account.tutorId,
+          actorType: 'public',
+          eventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_RECOVERY_SUCCEEDED,
+          metadata: { result: 'pin_updated' },
+        }
+      );
+
+      return {
+        status: 'pin_updated',
+        identifierType: account.identifierType,
+        identifierMasked: account.identifierMasked,
+        message:
+          'PIN atualizado. Entre novamente com seu CPF e o novo PIN.',
+      };
+    } catch (error) {
+      claimedChallenge.stage = 'failed';
+      claimedChallenge.verificationTokenHash = null;
+      await claimedChallenge.save();
+
+      await this._registerEventBestEffort(
+        'pin-recovery.complete-failed.event-failed',
+        {
+          schoolId: claimedChallenge.school_id,
+          accountId: claimedChallenge.guardianAccessAccountId,
+          recoveryChallengeId: claimedChallenge._id,
+          studentId: claimedChallenge.studentId,
+          tutorId: claimedChallenge.tutorId,
+          actorType: 'public',
+          eventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_RECOVERY_FAILED,
+          metadata: { reason: error.reason || 'completion_failed' },
+        }
+      );
+
+      throw error;
+    }
   }
 
   async setPin({ challengeId, verificationToken, pin }) {

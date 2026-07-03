@@ -64,6 +64,27 @@ function matchesFilter(document, filter = {}) {
       if (Object.prototype.hasOwnProperty.call(condition, '$ne')) {
         return values.every((value) => !sameValue(value, condition.$ne));
       }
+
+      if (Object.prototype.hasOwnProperty.call(condition, '$gte')) {
+        return values.some(
+          (value) =>
+            new Date(value).getTime() >= new Date(condition.$gte).getTime()
+        );
+      }
+
+      if (Object.prototype.hasOwnProperty.call(condition, '$gt')) {
+        return values.some(
+          (value) =>
+            new Date(value).getTime() > new Date(condition.$gt).getTime()
+        );
+      }
+
+      if (Object.prototype.hasOwnProperty.call(condition, '$lt')) {
+        return values.some(
+          (value) =>
+            new Date(value).getTime() < new Date(condition.$lt).getTime()
+        );
+      }
     }
 
     return values.some((value) => sameValue(value, condition));
@@ -95,6 +116,12 @@ function createHarness(seed = {}) {
     links: (seed.links || []).map((item) => ({ ...item })),
     events: (seed.events || []).map((item) => ({ ...item })),
     challenges: (seed.challenges || []).map((item) => ({ ...item })),
+    recoveryChallenges: (seed.recoveryChallenges || []).map((item) => ({
+      ...item,
+    })),
+    recoveryRateLimits: (seed.recoveryRateLimits || []).map((item) => ({
+      ...item,
+    })),
   };
 
   const nowProvider = () => new Date(now);
@@ -102,6 +129,7 @@ function createHarness(seed = {}) {
 
   state.accounts.forEach((item) => attachSave(item, nowProvider));
   state.challenges.forEach((item) => attachSave(item, nowProvider));
+  state.recoveryChallenges.forEach((item) => attachSave(item, nowProvider));
 
   const service = new GuardianAuthService({
     SchoolModel: {
@@ -249,6 +277,70 @@ function createHarness(seed = {}) {
         return createQuery(state.challenges.find((item) => sameValue(item._id, id)) || null);
       },
     },
+    GuardianPinRecoveryChallengeModel: {
+      async countDocuments(filter = {}) {
+        return state.recoveryChallenges.filter((item) =>
+          matchesFilter(item, filter)
+        ).length;
+      },
+      async create(data) {
+        const record = attachSave(
+          {
+            _id: data._id || nextId('recovery'),
+            createdAt: nowProvider().toISOString(),
+            updatedAt: nowProvider().toISOString(),
+            ...data,
+          },
+          nowProvider
+        );
+        state.recoveryChallenges.push(record);
+        return record;
+      },
+      findById(id) {
+        return createQuery(
+          state.recoveryChallenges.find((item) => sameValue(item._id, id)) ||
+            null
+        );
+      },
+      findOneAndUpdate(filter = {}, update = {}) {
+        const record =
+          state.recoveryChallenges.find((item) =>
+            matchesFilter(item, filter)
+          ) || null;
+        if (record) {
+          Object.assign(record, update.$set || {});
+          record.updatedAt = nowProvider().toISOString();
+        }
+        return createQuery(record);
+      },
+    },
+    GuardianPinRecoveryRateLimitModel: {
+      async findOneAndUpdate(filter = {}, update = {}, options = {}) {
+        let record =
+          state.recoveryRateLimits.find((item) =>
+            matchesFilter(item, filter)
+          ) || null;
+
+        if (!record && options.upsert) {
+          record = {
+            _id: nextId('recovery-rate'),
+            createdAt: nowProvider().toISOString(),
+            updatedAt: nowProvider().toISOString(),
+            ...filter,
+            ...(update.$setOnInsert || {}),
+            count: 0,
+          };
+          state.recoveryRateLimits.push(record);
+        }
+
+        if (!record) return null;
+        Object.assign(record, update.$setOnInsert || {});
+        record.count =
+          Number(record.count || 0) + Number(update.$inc?.count || 0);
+        record.updatedAt = nowProvider().toISOString();
+        return record;
+      },
+    },
     guardianJwtSecret: 'guardian-secret',
     now: nowProvider,
   });
@@ -287,6 +379,7 @@ function createBaseSeed() {
         fullName: 'Maria Souza',
         cpf: '123.456.789-09',
         cpfNormalized: '12345678909',
+        birthDate: '1985-07-10T00:00:00.000Z',
         students: ['student-1'],
       },
     ],
@@ -316,9 +409,59 @@ function createMultiChildSeed() {
     fullName: 'Maria Souza',
     cpf: '123.456.789-09',
     cpfNormalized: '12345678909',
+    birthDate: '1985-07-10T00:00:00.000Z',
     students: ['student-2'],
   });
   return seed;
+}
+
+async function createRecoverySeed({
+  pin = '246810',
+  status = 'active',
+  pinHash = undefined,
+} = {}) {
+  const seed = createBaseSeed();
+  seed.accounts.push({
+    _id: 'account-1',
+    school_id: 'school-1',
+    tutorId: 'tutor-1',
+    identifierType: 'cpf',
+    identifierNormalized: '12345678909',
+    identifierMasked: '***.***.***-09',
+    pinHash:
+      pinHash === undefined
+        ? await bcrypt.hash(pin, 4)
+        : pinHash,
+    status,
+    activatedAt: status === 'active' ? '2026-01-01T00:00:00.000Z' : null,
+    pinUpdatedAt: status === 'active' ? '2026-01-01T00:00:00.000Z' : null,
+    tokenVersion: 2,
+    failedLoginCount: 0,
+    lastFailedAt: null,
+    blockedUntil: null,
+  });
+  seed.links.push({
+    _id: 'link-1',
+    school_id: 'school-1',
+    guardianAccessAccountId: 'account-1',
+    studentId: 'student-1',
+    tutorId: 'tutor-1',
+    relationshipSnapshot: 'Mae',
+    status: 'active',
+  });
+  return seed;
+}
+
+async function startValidRecovery(service, overrides = {}) {
+  return service.startPinRecovery({
+    cpf: '12345678909',
+    studentFullName: 'Ana Souza',
+    studentBirthDate: '2012-03-10',
+    guardianBirthDate: '1985-07-10',
+    schoolPublicId: 'escola-a',
+    requestMeta: { ip: '203.0.113.10', userAgent: 'test-agent' },
+    ...overrides,
+  });
 }
 
 test('guardian auth first access succeeds end-to-end with PIN creation and recurring login', async () => {
@@ -1056,4 +1199,478 @@ test('guardian auth login requests school selection only when the same CPF and P
       return true;
     }
   );
+});
+
+test('guardian PIN recovery succeeds with the complete validated identity', async () => {
+  const harness = createHarness(await createRecoverySeed());
+  const started = await startValidRecovery(harness.service);
+
+  assert.equal(started.schoolSelectionRequired, false);
+  assert.equal(started.expiresInSeconds, 900);
+  assert.ok(started.challengeId);
+  assert.ok(started.verificationToken);
+
+  const result = await harness.service.completePinRecovery({
+    challengeId: started.challengeId,
+    verificationToken: started.verificationToken,
+    newPin: '654321',
+  });
+
+  assert.equal(result.status, 'pin_updated');
+  assert.equal(result.identifierMasked, '***.***.***-09');
+});
+
+test('guardian PIN recovery rejects a wrong student with a generic message', async () => {
+  const harness = createHarness(await createRecoverySeed());
+
+  await assert.rejects(
+    () =>
+      startValidRecovery(harness.service, {
+        studentFullName: 'Aluno Inexistente',
+      }),
+    (error) =>
+      error.statusCode === 400 &&
+      error.message ===
+        'Nao foi possivel confirmar os dados informados. Revise e tente novamente ou procure a escola.'
+  );
+});
+
+test('guardian PIN recovery rejects a CPF that is not linked to the student', async () => {
+  const seed = await createRecoverySeed();
+  seed.tutors.push({
+    _id: 'tutor-2',
+    school_id: 'school-1',
+    fullName: 'Outro Responsavel',
+    cpf: '529.982.247-25',
+    cpfNormalized: '52998224725',
+    birthDate: '1985-07-10T00:00:00.000Z',
+  });
+  seed.accounts.push({
+    _id: 'account-2',
+    school_id: 'school-1',
+    tutorId: 'tutor-2',
+    identifierType: 'cpf',
+    identifierNormalized: '52998224725',
+    identifierMasked: '***.***.***-25',
+    pinHash: await bcrypt.hash('111111', 4),
+    status: 'active',
+    tokenVersion: 0,
+  });
+  const harness = createHarness(seed);
+
+  await assert.rejects(
+    () => startValidRecovery(harness.service, { cpf: '52998224725' }),
+    (error) =>
+      error.reason === 'pin_recovery_identity_not_confirmed' &&
+      !error.message.includes('CPF')
+  );
+});
+
+test('guardian PIN recovery rejects an incorrect guardian birth date', async () => {
+  const harness = createHarness(await createRecoverySeed());
+
+  await assert.rejects(
+    () =>
+      startValidRecovery(harness.service, {
+        guardianBirthDate: '1985-07-11',
+      }),
+    (error) =>
+      error.reason === 'pin_recovery_identity_not_confirmed' &&
+      !error.message.toLowerCase().includes('nascimento')
+  );
+});
+
+test('guardian PIN recovery isolates accounts with the same CPF across schools', async () => {
+  const seed = await createRecoverySeed({ pin: '111111' });
+  seed.schools.push({
+    _id: 'school-2',
+    name: 'Escola B',
+    publicIdentifier: 'escola-b',
+  });
+  seed.students.push({
+    ...seed.students[0],
+    _id: 'student-2',
+    school_id: 'school-2',
+    financialTutorId: 'tutor-2',
+    tutors: [{ tutorId: 'tutor-2', relationship: 'Mae' }],
+  });
+  seed.tutors.push({
+    ...seed.tutors[0],
+    _id: 'tutor-2',
+    school_id: 'school-2',
+    students: ['student-2'],
+  });
+  seed.accounts.push({
+    ...seed.accounts[0],
+    _id: 'account-2',
+    school_id: 'school-2',
+    tutorId: 'tutor-2',
+    pinHash: await bcrypt.hash('222222', 4),
+    tokenVersion: 4,
+  });
+  seed.links.push({
+    ...seed.links[0],
+    _id: 'link-2',
+    school_id: 'school-2',
+    guardianAccessAccountId: 'account-2',
+    studentId: 'student-2',
+    tutorId: 'tutor-2',
+  });
+  const harness = createHarness(seed);
+
+  const selection = await startValidRecovery(harness.service, {
+    schoolPublicId: null,
+  });
+  assert.equal(selection.schoolSelectionRequired, true);
+  assert.deepEqual(
+    selection.options.map((item) => item.schoolPublicId).sort(),
+    ['escola-a', 'escola-b']
+  );
+
+  const started = await startValidRecovery(harness.service, {
+    schoolPublicId: 'escola-b',
+  });
+  await harness.service.completePinRecovery({
+    challengeId: started.challengeId,
+    verificationToken: started.verificationToken,
+    newPin: '333333',
+  });
+
+  assert.equal(await bcrypt.compare('111111', harness.state.accounts[0].pinHash), true);
+  assert.equal(await bcrypt.compare('333333', harness.state.accounts[1].pinHash), true);
+  assert.equal(harness.state.accounts[0].tokenVersion, 2);
+  assert.equal(harness.state.accounts[1].tokenVersion, 5);
+});
+
+test('administrative reset can be completed only through PIN recovery and new login', async () => {
+  const harness = createHarness(await createRecoverySeed({ pin: '246810' }));
+
+  await harness.service.resetPin({
+    schoolId: 'school-1',
+    accountId: 'account-1',
+    actor: { id: 'user-1', roles: ['Admin'] },
+  });
+
+  assert.equal(harness.state.accounts[0].status, 'pending');
+  assert.equal(harness.state.accounts[0].pinHash, null);
+
+  const firstAccess = await harness.service.startFirstAccess({
+    studentFullName: 'Ana Souza',
+    birthDate: '2012-03-10',
+  });
+  await assert.rejects(
+    () =>
+      harness.service.verifyResponsible({
+        challengeId: firstAccess.challengeId,
+        optionId: firstAccess.guardians[0].optionId,
+        cpf: '12345678909',
+      }),
+    (error) => error.reason === 'pin_recovery_required'
+  );
+
+  const started = await startValidRecovery(harness.service);
+  await harness.service.completePinRecovery({
+    challengeId: started.challengeId,
+    verificationToken: started.verificationToken,
+    newPin: '654321',
+  });
+  const login = await harness.service.login({
+    schoolPublicId: 'escola-a',
+    identifier: '12345678909',
+    pin: '654321',
+  });
+
+  assert.ok(login.token);
+  assert.equal(harness.state.accounts[0].status, 'active');
+});
+
+test('the old PIN stops working after guardian PIN recovery', async () => {
+  const harness = createHarness(await createRecoverySeed({ pin: '246810' }));
+  const started = await startValidRecovery(harness.service);
+  await harness.service.completePinRecovery({
+    challengeId: started.challengeId,
+    verificationToken: started.verificationToken,
+    newPin: '654321',
+  });
+
+  await assert.rejects(
+    () =>
+      harness.service.login({
+        schoolPublicId: 'escola-a',
+        identifier: '12345678909',
+        pin: '246810',
+      }),
+    (error) => error.statusCode === 401
+  );
+});
+
+test('the new PIN authenticates after guardian PIN recovery', async () => {
+  const harness = createHarness(await createRecoverySeed());
+  const started = await startValidRecovery(harness.service);
+  await harness.service.completePinRecovery({
+    challengeId: started.challengeId,
+    verificationToken: started.verificationToken,
+    newPin: '654321',
+  });
+
+  const login = await harness.service.login({
+    schoolPublicId: 'escola-a',
+    identifier: '12345678909',
+    pin: '654321',
+  });
+  assert.ok(login.token);
+});
+
+test('guardian PIN recovery increments tokenVersion', async () => {
+  const harness = createHarness(await createRecoverySeed());
+  const account = harness.state.accounts[0];
+  const started = await startValidRecovery(harness.service);
+
+  await harness.service.completePinRecovery({
+    challengeId: started.challengeId,
+    verificationToken: started.verificationToken,
+    newPin: '654321',
+  });
+
+  assert.equal(account.tokenVersion, 3);
+});
+
+test('guardian PIN recovery makes previously issued session versions stale', async () => {
+  const harness = createHarness(await createRecoverySeed());
+  const account = harness.state.accounts[0];
+  const oldToken = harness.service._signGuardianToken(account);
+  const oldPayload = harness.service.jwt.verify(oldToken, 'guardian-secret');
+  const started = await startValidRecovery(harness.service);
+
+  await harness.service.completePinRecovery({
+    challengeId: started.challengeId,
+    verificationToken: started.verificationToken,
+    newPin: '654321',
+  });
+
+  assert.equal(oldPayload.tokenVersion, 2);
+  assert.notEqual(oldPayload.tokenVersion, account.tokenVersion);
+});
+
+test('an expired guardian PIN recovery challenge cannot be completed', async () => {
+  const harness = createHarness(await createRecoverySeed());
+  const started = await startValidRecovery(harness.service);
+  harness.setNow('2026-04-07T10:16:00.000Z');
+
+  await assert.rejects(
+    () =>
+      harness.service.completePinRecovery({
+        challengeId: started.challengeId,
+        verificationToken: started.verificationToken,
+        newPin: '654321',
+      }),
+    (error) =>
+      error.statusCode === 410 &&
+      error.reason === 'pin_recovery_challenge_expired'
+  );
+});
+
+test('a completed guardian PIN recovery challenge cannot be replayed', async () => {
+  const harness = createHarness(await createRecoverySeed());
+  const started = await startValidRecovery(harness.service);
+  await harness.service.completePinRecovery({
+    challengeId: started.challengeId,
+    verificationToken: started.verificationToken,
+    newPin: '654321',
+  });
+
+  await assert.rejects(
+    () =>
+      harness.service.completePinRecovery({
+        challengeId: started.challengeId,
+        verificationToken: started.verificationToken,
+        newPin: '111111',
+      }),
+    (error) =>
+      error.statusCode === 409 &&
+      error.reason === 'pin_recovery_challenge_used'
+  );
+});
+
+test('an invalid guardian PIN recovery token cannot change the PIN', async () => {
+  const harness = createHarness(await createRecoverySeed({ pin: '246810' }));
+  const started = await startValidRecovery(harness.service);
+
+  await assert.rejects(
+    () =>
+      harness.service.completePinRecovery({
+        challengeId: started.challengeId,
+        verificationToken: 'invalid-token',
+        newPin: '654321',
+      }),
+    (error) => error.statusCode === 401
+  );
+  assert.equal(
+    await bcrypt.compare('246810', harness.state.accounts[0].pinHash),
+    true
+  );
+});
+
+test('persistent rate limiting blocks excessive PIN recovery starts', async () => {
+  const harness = createHarness(await createRecoverySeed());
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await assert.rejects(() =>
+      startValidRecovery(harness.service, {
+        studentFullName: `Aluno Incorreto ${attempt}`,
+      })
+    );
+  }
+
+  await assert.rejects(
+    () =>
+      startValidRecovery(harness.service, {
+        studentFullName: 'Outro Aluno',
+      }),
+    (error) =>
+      error.statusCode === 429 &&
+      error.reason === 'pin_recovery_rate_limited'
+  );
+});
+
+test('PIN recovery identity failures remain non-enumerable', async () => {
+  const harness = createHarness(await createRecoverySeed());
+  const failures = [
+    { cpf: '52998224725' },
+    { studentFullName: 'Nome Incorreto' },
+    { studentBirthDate: '2012-03-11' },
+    { guardianBirthDate: '1985-07-11' },
+  ];
+
+  for (const override of failures) {
+    await assert.rejects(
+      () => startValidRecovery(harness.service, override),
+      (error) =>
+        error.message ===
+        'Nao foi possivel confirmar os dados informados. Revise e tente novamente ou procure a escola.'
+    );
+  }
+});
+
+test('guardian PIN recovery records success audit without sensitive metadata', async () => {
+  const harness = createHarness(await createRecoverySeed());
+  const started = await startValidRecovery(harness.service);
+  await harness.service.completePinRecovery({
+    challengeId: started.challengeId,
+    verificationToken: started.verificationToken,
+    newPin: '654321',
+  });
+
+  const event = harness.state.events.find(
+    (item) =>
+      item.eventType === GUARDIAN_ACCESS_EVENT_TYPES.PIN_RECOVERY_SUCCEEDED
+  );
+  assert.ok(event);
+  assert.equal(JSON.stringify(event).includes('654321'), false);
+  assert.equal(JSON.stringify(event).includes('12345678909'), false);
+});
+
+test('guardian PIN recovery records failure and challenge blocking audit', async () => {
+  const harness = createHarness(await createRecoverySeed());
+  const started = await startValidRecovery(harness.service);
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await assert.rejects(() =>
+      harness.service.completePinRecovery({
+        challengeId: started.challengeId,
+        verificationToken: `invalid-${attempt}`,
+        newPin: '654321',
+      })
+    );
+  }
+
+  assert.ok(
+    harness.state.events.some(
+      (item) =>
+        item.eventType === GUARDIAN_ACCESS_EVENT_TYPES.PIN_RECOVERY_FAILED
+    )
+  );
+  assert.ok(
+    harness.state.events.some(
+      (item) =>
+        item.eventType === GUARDIAN_ACCESS_EVENT_TYPES.PIN_RECOVERY_BLOCKED
+    )
+  );
+});
+
+test('guardian PIN recovery stores the new PIN only as a bcrypt hash', async () => {
+  const harness = createHarness(await createRecoverySeed());
+  const started = await startValidRecovery(harness.service);
+  await harness.service.completePinRecovery({
+    challengeId: started.challengeId,
+    verificationToken: started.verificationToken,
+    newPin: '654321',
+  });
+
+  const account = harness.state.accounts[0];
+  assert.notEqual(account.pinHash, '654321');
+  assert.match(account.pinHash, /^\$2[aby]\$/);
+  assert.equal(await bcrypt.compare('654321', account.pinHash), true);
+});
+
+test('guardian PIN recovery does not expose PIN or token in logs or responses', async () => {
+  const harness = createHarness(await createRecoverySeed());
+  const captured = [];
+  const originalInfo = console.info;
+  console.info = (...args) => captured.push(args.join(' '));
+
+  try {
+    const started = await startValidRecovery(harness.service);
+    const result = await harness.service.completePinRecovery({
+      challengeId: started.challengeId,
+      verificationToken: started.verificationToken,
+      newPin: '654321',
+    });
+
+    assert.equal(JSON.stringify(result).includes('654321'), false);
+    assert.equal(JSON.stringify(result).includes(started.verificationToken), false);
+    assert.equal(captured.join(' ').includes('654321'), false);
+    assert.equal(captured.join(' ').includes(started.verificationToken), false);
+  } finally {
+    console.info = originalInfo;
+  }
+});
+
+test('multiple linked students remain available after guardian PIN recovery', async () => {
+  const seed = await createRecoverySeed();
+  seed.students.push({
+    _id: 'student-2',
+    school_id: 'school-1',
+    fullName: 'Gabriel Souza',
+    fullNameNormalized: 'gabriel souza',
+    birthDateKey: '2014-08-20',
+    birthDate: '2014-08-20T00:00:00.000Z',
+    isActive: true,
+    financialTutorId: 'tutor-1',
+    tutors: [{ tutorId: 'tutor-1', relationship: 'Mae' }],
+  });
+  seed.links.push({
+    _id: 'link-2',
+    school_id: 'school-1',
+    guardianAccessAccountId: 'account-1',
+    studentId: 'student-2',
+    tutorId: 'tutor-1',
+    relationshipSnapshot: 'Mae',
+    status: 'active',
+  });
+  const harness = createHarness(seed);
+  const started = await startValidRecovery(harness.service);
+  await harness.service.completePinRecovery({
+    challengeId: started.challengeId,
+    verificationToken: started.verificationToken,
+    newPin: '654321',
+  });
+  const login = await harness.service.login({
+    schoolPublicId: 'escola-a',
+    identifier: '12345678909',
+    pin: '654321',
+  });
+
+  assert.equal(login.guardian.linkedStudentsCount, 2);
+  assert.equal(login.linkedStudents.length, 2);
 });

@@ -22,6 +22,14 @@ router.post(
   '/guardian-auth/first-access/link-existing-account',
   guardianAuthController.linkExistingAccount
 );
+router.post(
+  '/guardian-auth/pin-recovery/start',
+  guardianAuthController.startPinRecovery
+);
+router.post(
+  '/guardian-auth/pin-recovery/complete',
+  guardianAuthController.completePinRecovery
+);
 router.post('/guardian-auth/login', guardianAuthController.login);
 router.get(
   '/guardian-auth/portal/home',
