@@ -70,6 +70,9 @@ const schoolActivityLibraryRoutes = require('./api/routes/schoolActivityLibrary.
 const activityCorrectionRoutes = require('./api/routes/activityCorrection.routes.js');
 
 const app = express();
+const { parseTrustProxy } = require('./config/trustProxy');
+
+app.set('trust proxy', parseTrustProxy(process.env.TRUST_PROXY));
 
 // Configuração CORS
 app.use(cors()); 

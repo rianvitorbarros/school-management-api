@@ -98,6 +98,22 @@ const guardianFirstAccessChallengeSchema = new Schema(
       type: String,
       default: null,
     },
+    cpfHash: { type: String, default: null },
+    cpfMasked: { type: String, default: null, maxlength: 24 },
+    ipMasked: { type: String, default: null, maxlength: 80 },
+    userAgentSummary: { type: String, default: null, maxlength: 160 },
+    devicePlatform: {
+      type: String,
+      enum: ['android', 'ios', 'web', 'windows', 'macos', 'linux', 'unknown'],
+      default: 'unknown',
+    },
+    appVersion: { type: String, default: null, maxlength: 40 },
+    source: {
+      type: String,
+      enum: ['mobile', 'desktop', 'api', 'system', 'unknown'],
+      default: 'unknown',
+    },
+    correlationId: { type: String, default: null, maxlength: 80 },
   },
   {
     timestamps: true,

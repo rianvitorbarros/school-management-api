@@ -58,6 +58,31 @@ const guardianAccessEventSchema = new Schema(
       ref: 'User',
       default: null,
     },
+    schemaVersion: {
+      type: Number,
+      default: 2,
+      min: 1,
+    },
+    status: {
+      type: String,
+      enum: ['success', 'failed', 'blocked', 'expired', 'revoked', 'info'],
+      default: 'info',
+      index: true,
+    },
+    source: {
+      type: String,
+      enum: ['mobile', 'desktop', 'api', 'system', 'unknown'],
+      default: 'unknown',
+    },
+    actorNameSnapshot: {
+      type: String,
+      default: null,
+      maxlength: 160,
+    },
+    actorRoleSnapshot: {
+      type: [String],
+      default: [],
+    },
     eventType: {
       type: String,
       enum: GUARDIAN_ACCESS_EVENT_TYPE_VALUES,
@@ -68,6 +93,76 @@ const guardianAccessEventSchema = new Schema(
       type: Schema.Types.Mixed,
       default: {},
     },
+    reasonCode: {
+      type: String,
+      default: null,
+      maxlength: 80,
+    },
+    reasonText: {
+      type: String,
+      default: null,
+      maxlength: 500,
+    },
+    affectedFields: {
+      type: [String],
+      default: [],
+    },
+    tokenVersionBefore: {
+      type: Number,
+      default: null,
+      min: 0,
+    },
+    tokenVersionAfter: {
+      type: Number,
+      default: null,
+      min: 0,
+    },
+    sessionsRevoked: {
+      type: Boolean,
+      default: false,
+    },
+    ipHash: {
+      type: String,
+      default: null,
+    },
+    ipMasked: {
+      type: String,
+      default: null,
+      maxlength: 80,
+    },
+    userAgentHash: {
+      type: String,
+      default: null,
+    },
+    userAgentSummary: {
+      type: String,
+      default: null,
+      maxlength: 160,
+    },
+    devicePlatform: {
+      type: String,
+      enum: ['android', 'ios', 'web', 'windows', 'macos', 'linux', 'unknown'],
+      default: 'unknown',
+    },
+    appVersion: {
+      type: String,
+      default: null,
+      maxlength: 40,
+    },
+    cpfHash: {
+      type: String,
+      default: null,
+    },
+    cpfMasked: {
+      type: String,
+      default: null,
+      maxlength: 24,
+    },
+    correlationId: {
+      type: String,
+      default: null,
+      maxlength: 80,
+    },
   },
   {
     timestamps: true,
@@ -75,13 +170,41 @@ const guardianAccessEventSchema = new Schema(
 );
 
 guardianAccessEventSchema.index(
-  { school_id: 1, accountId: 1, createdAt: -1 },
+  { school_id: 1, accountId: 1, createdAt: -1, _id: -1 },
   { name: 'idx_guardian_access_event_school_account_created' }
 );
 
 guardianAccessEventSchema.index(
-  { school_id: 1, studentId: 1, createdAt: -1 },
+  { school_id: 1, studentId: 1, createdAt: -1, _id: -1 },
   { name: 'idx_guardian_access_event_school_student_created' }
+);
+
+guardianAccessEventSchema.index(
+  { school_id: 1, tutorId: 1, createdAt: -1, _id: -1 },
+  { name: 'idx_guardian_access_event_school_tutor_created' }
+);
+
+guardianAccessEventSchema.index(
+  { school_id: 1, eventType: 1, createdAt: -1, _id: -1 },
+  { name: 'idx_guardian_access_event_school_type_created' }
+);
+
+guardianAccessEventSchema.index(
+  { school_id: 1, status: 1, createdAt: -1, _id: -1 },
+  { name: 'idx_guardian_access_event_school_status_created' }
+);
+
+guardianAccessEventSchema.index(
+  { school_id: 1, actorUserId: 1, createdAt: -1, _id: -1 },
+  { name: 'idx_guardian_access_event_school_actor_created' }
+);
+
+guardianAccessEventSchema.index(
+  { school_id: 1, correlationId: 1, createdAt: -1, _id: -1 },
+  {
+    name: 'idx_guardian_access_event_school_correlation_created',
+    partialFilterExpression: { correlationId: { $type: 'string' } },
+  }
 );
 
 module.exports = mongoose.model('GuardianAccessEvent', guardianAccessEventSchema);

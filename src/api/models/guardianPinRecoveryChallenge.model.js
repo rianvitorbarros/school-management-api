@@ -57,6 +57,10 @@ const guardianPinRecoveryChallengeSchema = new Schema(
       required: true,
       index: true,
     },
+    purgeAt: {
+      type: Date,
+      default: () => new Date(Date.now() + 24 * 60 * 60 * 1000),
+    },
     completedAt: {
       type: Date,
       default: null,
@@ -75,6 +79,21 @@ const guardianPinRecoveryChallengeSchema = new Schema(
       type: String,
       default: null,
     },
+    ipMasked: { type: String, default: null, maxlength: 80 },
+    cpfMasked: { type: String, default: null, maxlength: 24 },
+    userAgentSummary: { type: String, default: null, maxlength: 160 },
+    devicePlatform: {
+      type: String,
+      enum: ['android', 'ios', 'web', 'windows', 'macos', 'linux', 'unknown'],
+      default: 'unknown',
+    },
+    appVersion: { type: String, default: null, maxlength: 40 },
+    source: {
+      type: String,
+      enum: ['mobile', 'desktop', 'api', 'system', 'unknown'],
+      default: 'unknown',
+    },
+    correlationId: { type: String, default: null, maxlength: 80 },
   },
   {
     timestamps: true,
@@ -92,8 +111,11 @@ guardianPinRecoveryChallengeSchema.index(
 );
 
 guardianPinRecoveryChallengeSchema.index(
-  { expiresAt: 1 },
-  { expireAfterSeconds: 0, name: 'ttl_guardian_pin_recovery_challenge' }
+  { purgeAt: 1 },
+  {
+    expireAfterSeconds: 0,
+    name: 'ttl_guardian_pin_recovery_challenge_purge',
+  }
 );
 
 module.exports = mongoose.model(

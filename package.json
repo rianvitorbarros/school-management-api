@@ -16,6 +16,7 @@
     "test:omr:real-images": "node scripts/test-omr-real-images.js",
     "test:omr:15-real": "node scripts/test-omr-15-real.js",
     "guardian:eligibility-report": "node src/scripts/reportGuardianAccessEligibility.js",
+    "guardian:audit-indexes": "node src/scripts/migrateGuardianAuditIndexes.js",
     "classes:fix-indexes": "node src/scripts/fixClassIndexes.js",
     "gmail:bootstrap": "node src/scripts/bootstrapGmailOAuth.js",
     "gmail:validate": "node src/scripts/validateGmailProvider.js",

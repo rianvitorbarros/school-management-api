@@ -5,6 +5,7 @@ const NotificationService = require('../api/services/notification.service');
 const gmailMailboxReconciliationService = require('../api/services/gmailMailboxReconciliation.service');
 const WhatsappBotService = require('../api/services/whatsappBot.service');
 const tempAccessTokenService = require('../api/services/tempAccessToken.service');
+const guardianAuthService = require('../api/services/guardianAuth.service');
 
 let financeSyncSweepRunning = false;
 
@@ -139,6 +140,22 @@ const initCronJobs = () => {
             console.error('Erro limpando tokens temporarios:', error);
         }
 
+    }, {
+        scheduled: true,
+        timezone: 'America/Sao_Paulo',
+    });
+
+    cron.schedule('*/5 * * * *', async () => {
+        try {
+            const result = await guardianAuthService.expirePinRecoveryChallenges();
+            if (result?.expiredCount > 0) {
+                console.log('[Cron] Recuperacoes de PIN expiradas', {
+                    expiredCount: result.expiredCount,
+                });
+            }
+        } catch (error) {
+            console.error('Erro auditando recuperacoes de PIN expiradas:', error);
+        }
     }, {
         scheduled: true,
         timezone: 'America/Sao_Paulo',

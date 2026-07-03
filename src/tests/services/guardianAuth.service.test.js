@@ -8,17 +8,51 @@ const {
   GUARDIAN_ACCESS_EVENT_TYPES,
   GUARDIAN_ACCESS_EVENT_TYPE_VALUES,
 } = require('../../api/constants/guardianAccessEventTypes');
+const {
+  sanitizeEventMetadata,
+  sanitizeReasonText,
+} = require('../../api/utils/guardianAudit.util');
 
 function createQuery(value) {
+  let currentValue = value;
   return {
     select() {
       return this;
     },
+    session() {
+      return this;
+    },
+    sort(spec = {}) {
+      if (Array.isArray(currentValue)) {
+        const entries = Object.entries(spec);
+        currentValue = [...currentValue].sort((left, right) => {
+          for (const [field, direction] of entries) {
+            const leftValue = getPathValues(left, field)[0];
+            const rightValue = getPathValues(right, field)[0];
+            const leftTime = new Date(leftValue).getTime();
+            const rightTime = new Date(rightValue).getTime();
+            const comparison =
+              !Number.isNaN(leftTime) && !Number.isNaN(rightTime)
+                ? leftTime - rightTime
+                : String(leftValue).localeCompare(String(rightValue));
+            if (comparison) return direction < 0 ? -comparison : comparison;
+          }
+          return 0;
+        });
+      }
+      return this;
+    },
+    limit(limit) {
+      if (Array.isArray(currentValue)) {
+        currentValue = currentValue.slice(0, limit);
+      }
+      return this;
+    },
     lean() {
-      return Promise.resolve(value);
+      return Promise.resolve(currentValue);
     },
     then(resolve, reject) {
-      return Promise.resolve(value).then(resolve, reject);
+      return Promise.resolve(currentValue).then(resolve, reject);
     },
   };
 }
@@ -43,6 +77,11 @@ function getPathValues(source, path) {
 }
 
 function sameValue(left, right) {
+  const leftTime = new Date(left).getTime();
+  const rightTime = new Date(right).getTime();
+  if (!Number.isNaN(leftTime) && !Number.isNaN(rightTime)) {
+    return leftTime === rightTime;
+  }
   return String(left) === String(right);
 }
 
@@ -50,6 +89,9 @@ function matchesFilter(document, filter = {}) {
   return Object.entries(filter).every(([key, condition]) => {
     if (key === '$or') {
       return Array.isArray(condition) && condition.some((item) => matchesFilter(document, item));
+    }
+    if (key === '$and') {
+      return Array.isArray(condition) && condition.every((item) => matchesFilter(document, item));
     }
 
     const values = getPathValues(document, key);
@@ -59,6 +101,11 @@ function matchesFilter(document, filter = {}) {
         return values.some((value) =>
           condition.$in.some((candidate) => sameValue(value, candidate))
         );
+      }
+
+      if (Object.prototype.hasOwnProperty.call(condition, '$exists')) {
+        const exists = values.length > 0 && values.some((value) => value !== undefined);
+        return exists === Boolean(condition.$exists);
       }
 
       if (Object.prototype.hasOwnProperty.call(condition, '$ne')) {
@@ -81,8 +128,20 @@ function matchesFilter(document, filter = {}) {
 
       if (Object.prototype.hasOwnProperty.call(condition, '$lt')) {
         return values.some(
+          (value) => {
+            const leftTime = new Date(value).getTime();
+            const rightTime = new Date(condition.$lt).getTime();
+            return !Number.isNaN(leftTime) && !Number.isNaN(rightTime)
+              ? leftTime < rightTime
+              : String(value) < String(condition.$lt);
+          }
+        );
+      }
+
+      if (Object.prototype.hasOwnProperty.call(condition, '$lte')) {
+        return values.some(
           (value) =>
-            new Date(value).getTime() < new Date(condition.$lt).getTime()
+            new Date(value).getTime() <= new Date(condition.$lte).getTime()
         );
       }
     }
@@ -258,6 +317,11 @@ function createHarness(seed = {}) {
         state.events.push(record);
         return record;
       },
+      find(filter = {}) {
+        return createQuery(
+          state.events.filter((item) => matchesFilter(item, filter))
+        );
+      },
     },
     GuardianFirstAccessChallengeModel: {
       async create(data) {
@@ -302,6 +366,13 @@ function createHarness(seed = {}) {
             null
         );
       },
+      find(filter = {}) {
+        return createQuery(
+          state.recoveryChallenges.filter((item) =>
+            matchesFilter(item, filter)
+          )
+        );
+      },
       findOneAndUpdate(filter = {}, update = {}) {
         const record =
           state.recoveryChallenges.find((item) =>
@@ -342,7 +413,9 @@ function createHarness(seed = {}) {
       },
     },
     guardianJwtSecret: 'guardian-secret',
+    auditHashSecret: 'guardian-audit-test-secret',
     now: nowProvider,
+    runCriticalTransaction: async (work) => work(null),
   });
 
   return {
@@ -1673,4 +1746,407 @@ test('multiple linked students remain available after guardian PIN recovery', as
 
   assert.equal(login.guardian.linkedStudentsCount, 2);
   assert.equal(login.linkedStudents.length, 2);
+});
+
+test('guardian PIN recovery records credential update and session revocation with one correlation id', async () => {
+  const harness = createHarness(await createRecoverySeed());
+  const started = await startValidRecovery(harness.service, {
+    requestMeta: {
+      ip: '203.0.113.25',
+      userAgent: 'Academy Hub Mobile Android',
+      source: 'mobile',
+      devicePlatform: 'android',
+      appVersion: '2.4.0',
+      correlationId: 'recovery-correlation',
+    },
+  });
+
+  await harness.service.completePinRecovery({
+    challengeId: started.challengeId,
+    verificationToken: started.verificationToken,
+    newPin: '654321',
+  });
+
+  const criticalTypes = [
+    GUARDIAN_ACCESS_EVENT_TYPES.PIN_RECOVERY_SUCCEEDED,
+    GUARDIAN_ACCESS_EVENT_TYPES.GUARDIAN_PIN_UPDATED,
+    GUARDIAN_ACCESS_EVENT_TYPES.GUARDIAN_SESSIONS_REVOKED,
+  ];
+  const events = harness.state.events.filter((event) =>
+    criticalTypes.includes(event.eventType)
+  );
+
+  assert.equal(events.length, 3);
+  assert.deepEqual(
+    [...new Set(events.map((event) => event.correlationId))],
+    ['recovery-correlation']
+  );
+  events.forEach((event) => {
+    assert.equal(event.schemaVersion, 2);
+    assert.equal(event.tokenVersionBefore, 2);
+    assert.equal(event.tokenVersionAfter, 3);
+    assert.equal(event.sessionsRevoked, true);
+    assert.equal(event.source, 'mobile');
+    assert.equal(event.ipMasked, '203.***.***.25');
+    assert.equal(event.cpfMasked, '***.***.***-09');
+    assert.equal(String(event.ipHash).includes('203.0.113.25'), false);
+  });
+});
+
+test('administrative reset records actor snapshot, sanitized reason and revocation atomically', async () => {
+  const harness = createHarness(await createRecoverySeed());
+
+  await harness.service.resetPin({
+    schoolId: 'school-1',
+    accountId: 'account-1',
+    actor: {
+      id: 'user-1',
+      fullName: 'Gestora Escolar',
+      roles: ['Admin'],
+    },
+    reasonCode: 'guardian_request',
+    reasonText: `  Solicitação presencial confirmada. ${'x'.repeat(600)}  `,
+    requestMeta: {
+      ip: '198.51.100.8',
+      userAgent: 'Chrome Windows',
+      source: 'desktop',
+      devicePlatform: 'windows',
+      correlationId: 'admin-reset-correlation',
+    },
+  });
+
+  const events = harness.state.events.filter((event) =>
+    [
+      GUARDIAN_ACCESS_EVENT_TYPES.PIN_RESET,
+      GUARDIAN_ACCESS_EVENT_TYPES.GUARDIAN_SESSIONS_REVOKED,
+    ].includes(event.eventType)
+  );
+  assert.equal(events.length, 2);
+  events.forEach((event) => {
+    assert.equal(event.actorUserId, 'user-1');
+    assert.equal(event.actorNameSnapshot, 'Gestora Escolar');
+    assert.deepEqual(event.actorRoleSnapshot, ['ADMIN']);
+    assert.equal(event.reasonCode, 'guardian_request');
+    assert.equal(event.reasonText.length, 500);
+    assert.equal(event.correlationId, 'admin-reset-correlation');
+    assert.equal(event.tokenVersionBefore, 2);
+    assert.equal(event.tokenVersionAfter, 3);
+  });
+});
+
+test('administrative unlock, deactivate and reactivate actions always create critical audit events', async () => {
+  const harness = createHarness(await createRecoverySeed());
+  const actor = {
+    id: 'user-1',
+    fullName: 'Gestora Escolar',
+    roles: ['Admin'],
+  };
+  const requestMeta = {
+    source: 'desktop',
+    correlationId: 'admin-action-correlation',
+  };
+
+  harness.state.accounts[0].blockedUntil = '2026-04-07T10:10:00.000Z';
+  harness.state.accounts[0].failedLoginCount = 5;
+  await harness.service.unlockAccount({
+    schoolId: 'school-1',
+    accountId: 'account-1',
+    actor,
+    reasonText: 'Identidade confirmada pela secretaria.',
+    requestMeta,
+  });
+  await harness.service.deactivateAccount({
+    schoolId: 'school-1',
+    accountId: 'account-1',
+    actor,
+    reasonCode: 'guardian_request',
+    requestMeta,
+  });
+  await harness.service.reactivateAccount({
+    schoolId: 'school-1',
+    accountId: 'account-1',
+    actor,
+    requestMeta,
+  });
+
+  const types = harness.state.events.map((event) => event.eventType);
+  assert.ok(types.includes(GUARDIAN_ACCESS_EVENT_TYPES.ACCOUNT_UNLOCKED));
+  assert.ok(types.includes(GUARDIAN_ACCESS_EVENT_TYPES.ACCOUNT_DEACTIVATED));
+  assert.ok(types.includes(GUARDIAN_ACCESS_EVENT_TYPES.ACCOUNT_REACTIVATED));
+  assert.ok(
+    types.includes(GUARDIAN_ACCESS_EVENT_TYPES.GUARDIAN_SESSIONS_REVOKED)
+  );
+  assert.equal(harness.state.accounts[0].tokenVersion, 3);
+});
+
+test('critical administrative mutation is not confirmed when audit persistence fails', async () => {
+  const harness = createHarness(await createRecoverySeed());
+  const account = harness.state.accounts[0];
+  const original = {
+    pinHash: account.pinHash,
+    status: account.status,
+    pinUpdatedAt: account.pinUpdatedAt,
+    tokenVersion: account.tokenVersion,
+  };
+  harness.service.runCriticalTransaction = async (work) => {
+    try {
+      return await work(null);
+    } catch (error) {
+      Object.assign(account, original);
+      throw error;
+    }
+  };
+  harness.service.GuardianAccessEventModel.create = async () => {
+    throw new Error('audit unavailable');
+  };
+
+  await assert.rejects(
+    () =>
+      harness.service.resetPin({
+        schoolId: 'school-1',
+        accountId: 'account-1',
+        actor: { id: 'user-1', fullName: 'Gestora', roles: ['Admin'] },
+      }),
+    /audit unavailable/
+  );
+  assert.equal(account.pinHash, original.pinHash);
+  assert.equal(account.status, original.status);
+  assert.equal(account.pinUpdatedAt, original.pinUpdatedAt);
+  assert.equal(account.tokenVersion, original.tokenVersion);
+});
+
+test('observed and swept expired recovery challenges produce PIN_RECOVERY_EXPIRED', async () => {
+  const harness = createHarness(await createRecoverySeed());
+  const started = await startValidRecovery(harness.service);
+  harness.setNow('2026-04-07T10:16:00.000Z');
+
+  await assert.rejects(() =>
+    harness.service.completePinRecovery({
+      challengeId: started.challengeId,
+      verificationToken: started.verificationToken,
+      newPin: '654321',
+    })
+  );
+  assert.ok(
+    harness.state.events.some(
+      (event) =>
+        event.eventType ===
+          GUARDIAN_ACCESS_EVENT_TYPES.PIN_RECOVERY_EXPIRED &&
+        event.status === 'expired'
+    )
+  );
+
+  const second = await startValidRecovery(harness.service, {
+    requestMeta: { ip: '203.0.113.77', userAgent: 'test-agent' },
+  });
+  harness.setNow('2026-04-07T10:32:00.000Z');
+  const sweep = await harness.service.expirePinRecoveryChallenges();
+  assert.equal(sweep.expiredCount, 1);
+  assert.equal(
+    harness.state.recoveryChallenges.find(
+      (challenge) => challenge._id === second.challengeId
+    ).stage,
+    'expired'
+  );
+});
+
+test('guardian audit metadata sanitizer only keeps shallow allowlisted values', () => {
+  const sanitized = sanitizeEventMetadata({
+    attempts: 2,
+    result: 'pin_updated',
+    pin: '654321',
+    newPin: '654321',
+    verificationToken: 'secret',
+    cpf: '12345678909',
+    ip: '203.0.113.1',
+    userAgent: 'raw agent',
+    studentFullName: 'Ana Souza',
+    nested: { password: 'secret' },
+    source: 'x'.repeat(300),
+  });
+
+  assert.deepEqual(Object.keys(sanitized).sort(), [
+    'attempts',
+    'result',
+    'source',
+  ]);
+  assert.equal(sanitized.source.length, 160);
+  assert.equal(sanitizeReasonText('x'.repeat(600)).length, 500);
+  assert.equal(
+    sanitizeReasonText(
+      'PIN 654321, CPF 123.456.789-09 e IP 203.0.113.25'
+    ).includes('654321'),
+    false
+  );
+  assert.equal(JSON.stringify(sanitized).includes('654321'), false);
+  assert.equal(JSON.stringify(sanitized).includes('12345678909'), false);
+});
+
+function createAuditQuerySeed() {
+  const schoolId = '64a000000000000000000001';
+  const accountId = '64a000000000000000000002';
+  const tutorId = '64a000000000000000000003';
+  const studentId = '64a000000000000000000004';
+  return {
+    schoolId,
+    accountId,
+    tutorId,
+    studentId,
+    seed: {
+      schools: [{ _id: schoolId, name: 'Escola Auditada' }],
+      students: [{ _id: studentId, school_id: schoolId }],
+      tutors: [{ _id: tutorId, school_id: schoolId }],
+      accounts: [
+        {
+          _id: accountId,
+          school_id: schoolId,
+          tutorId,
+          identifierNormalized: '12345678909',
+          identifierMasked: '***.***.***-09',
+          status: 'active',
+        },
+      ],
+      links: [
+        {
+          _id: '64a000000000000000000005',
+          school_id: schoolId,
+          guardianAccessAccountId: accountId,
+          tutorId,
+          studentId,
+          status: 'active',
+        },
+      ],
+      events: [
+        {
+          _id: '64a000000000000000000013',
+          school_id: schoolId,
+          accountId,
+          tutorId,
+          studentId,
+          actorType: 'guardian',
+          eventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_RECOVERY_SUCCEEDED,
+          schemaVersion: 2,
+          status: 'success',
+          source: 'mobile',
+          ipHash: 'abcdef1234567890',
+          ipMasked: '179.***.***.25',
+          cpfMasked: '***.***.***-09',
+          metadata: {
+            pin: 'must-not-return',
+            verificationToken: 'must-not-return',
+          },
+          createdAt: '2026-04-07T12:00:00.000Z',
+        },
+        {
+          _id: '64a000000000000000000012',
+          school_id: schoolId,
+          accountId,
+          tutorId,
+          actorType: 'public',
+          eventType: GUARDIAN_ACCESS_EVENT_TYPES.LOGIN_FAILED,
+          status: 'failed',
+          source: 'api',
+          createdAt: '2026-04-07T11:00:00.000Z',
+        },
+        {
+          _id: '64a000000000000000000011',
+          school_id: schoolId,
+          accountId,
+          tutorId,
+          actorType: 'staff',
+          eventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_RESET,
+          metadata: { password: 'must-not-return' },
+          createdAt: '2026-04-07T10:00:00.000Z',
+        },
+      ],
+    },
+  };
+}
+
+test('administrative event query returns sanitized DTO and normalizes legacy events', async () => {
+  const context = createAuditQuerySeed();
+  const harness = createHarness(context.seed);
+  const actor = { id: 'user-1', roles: ['Admin'] };
+
+  const firstPage = await harness.service.listGuardianAccessEvents({
+    schoolId: context.schoolId,
+    accountId: context.accountId,
+    actor,
+    filters: { limit: 2 },
+  });
+
+  assert.equal(firstPage.items.length, 2);
+  assert.equal(firstPage.hasMore, true);
+  assert.ok(firstPage.nextCursor);
+  assert.equal(firstPage.items[0].eventType, 'PIN_RECOVERY_SUCCEEDED');
+  assert.equal(firstPage.items[0].security.ipCorrelationId, 'abcdef123456');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(firstPage.items[0], 'metadata'),
+    false
+  );
+  assert.equal(JSON.stringify(firstPage).includes('must-not-return'), false);
+  assert.equal(JSON.stringify(firstPage).includes('abcdef1234567890'), false);
+
+  const secondPage = await harness.service.listGuardianAccessEvents({
+    schoolId: context.schoolId,
+    accountId: context.accountId,
+    actor,
+    filters: { limit: 2, cursor: firstPage.nextCursor },
+  });
+  assert.equal(secondPage.items.length, 1);
+  assert.equal(secondPage.items[0].schemaVersion, 1);
+  assert.equal(
+    secondPage.items[0].normalizedEventType,
+    'GUARDIAN_ADMIN_PIN_RESET'
+  );
+  assert.equal(secondPage.hasMore, false);
+});
+
+test('administrative event query enforces school, permission, student link and filters', async () => {
+  const context = createAuditQuerySeed();
+  const harness = createHarness(context.seed);
+  const actor = { id: 'user-1', roles: ['Admin'] };
+
+  await assert.rejects(
+    () =>
+      harness.service.listGuardianAccessEvents({
+        schoolId: '64a000000000000000000099',
+        accountId: context.accountId,
+        actor,
+      }),
+    (error) => error.statusCode === 404
+  );
+  await assert.rejects(
+    () =>
+      harness.service.listGuardianAccessEvents({
+        schoolId: context.schoolId,
+        accountId: context.accountId,
+        actor: { roles: ['Professor'] },
+      }),
+    (error) => error.statusCode === 403
+  );
+  await assert.rejects(
+    () =>
+      harness.service.listGuardianAccessEvents({
+        schoolId: context.schoolId,
+        accountId: context.accountId,
+        actor,
+        filters: { studentId: '64a000000000000000000099' },
+      }),
+    (error) => error.statusCode === 404
+  );
+
+  const filtered = await harness.service.listGuardianAccessEvents({
+    schoolId: context.schoolId,
+    accountId: context.accountId,
+    actor,
+    filters: {
+      eventType: GUARDIAN_ACCESS_EVENT_TYPES.LOGIN_FAILED,
+      status: 'failed',
+      from: '2026-04-07T10:30:00.000Z',
+      to: '2026-04-07T11:30:00.000Z',
+    },
+  });
+  assert.equal(filtered.items.length, 1);
+  assert.equal(filtered.items[0].normalizedEventType, 'GUARDIAN_LOGIN_FAILED');
 });

@@ -73,6 +73,11 @@ router.post(
   verifyToken,
   guardianAuthController.resetPin
 );
+router.get(
+  '/guardian-access-accounts/:accountId/events',
+  verifyToken,
+  guardianAuthController.listGuardianAccessEvents
+);
 router.post(
   '/guardian-access-accounts/:accountId/unlock',
   verifyToken,

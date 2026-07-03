@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const mongoose = require('mongoose');
 
 const School = require('../models/school.model');
 const Student = require('../models/student.model');
@@ -25,6 +26,7 @@ const invoiceService = require('./invoice.service');
 const tutorFinancialScoreService = require('./tutorFinancialScore.service');
 const {
   GUARDIAN_ACCESS_EVENT_TYPES,
+  GUARDIAN_ACCESS_EVENT_TYPE_VALUES,
 } = require('../constants/guardianAccessEventTypes');
 const {
   buildBirthDateKey,
@@ -35,6 +37,22 @@ const {
   normalizeName,
   parseDateInput,
 } = require('../utils/guardianAccess.util');
+const {
+  AUDIT_STATUSES,
+  buildGuardianAccessEventDto,
+  decodeEventCursor,
+  encodeEventCursor,
+  inferEventStatus,
+  maskIp,
+  normalizeAppVersion,
+  normalizeCorrelationId,
+  normalizeDevicePlatform,
+  normalizeReasonCode,
+  normalizeSource,
+  sanitizeEventMetadata,
+  sanitizeReasonText,
+  summarizeUserAgent,
+} = require('../utils/guardianAudit.util');
 
 const ADMIN_ROLES = new Set([
   'ADMIN',
@@ -59,6 +77,20 @@ const PIN_RECOVERY_GENERIC_MESSAGE =
   'Nao foi possivel confirmar os dados informados. Revise e tente novamente ou procure a escola.';
 const PIN_RECOVERY_LIMIT_MESSAGE =
   'Nao foi possivel continuar agora. Aguarde alguns minutos e tente novamente.';
+const PIN_RECOVERY_PURGE_DELAY_MINUTES = 24 * 60;
+const LEGACY_EVENT_TYPES_BY_STATUS = Object.freeze({
+  failed: [
+    'FIRST_ACCESS_FAILED',
+    'RESPONSIBLE_VERIFICATION_FAILED',
+    'PIN_SET_FAILED',
+    'LOGIN_FAILED',
+    'ACCOUNT_LINK_FAILED',
+    'PIN_RECOVERY_FAILED',
+  ],
+  blocked: ['ACCOUNT_BLOCKED', 'PIN_RECOVERY_BLOCKED'],
+  expired: ['PIN_RECOVERY_EXPIRED'],
+  revoked: ['GUARDIAN_SESSIONS_REVOKED'],
+});
 
 class GuardianAuthService {
   constructor(options = {}) {
@@ -99,6 +131,25 @@ class GuardianAuthService {
       options.guardianJwtSecret ||
       process.env.GUARDIAN_JWT_SECRET ||
       process.env.JWT_SECRET;
+    this.auditHashSecret =
+      options.auditHashSecret ||
+      process.env.GUARDIAN_AUDIT_HASH_SECRET ||
+      process.env.GUARDIAN_RECOVERY_HASH_SECRET ||
+      this.guardianJwtSecret;
+    this.runCriticalTransaction =
+      options.runCriticalTransaction ||
+      (async (work) => {
+        const session = await mongoose.startSession();
+        try {
+          let result;
+          await session.withTransaction(async () => {
+            result = await work(session);
+          });
+          return result;
+        } finally {
+          await session.endSession();
+        }
+      });
   }
 
   _createHttpError(message, statusCode = 400, extra = {}) {
@@ -128,12 +179,11 @@ class GuardianAuthService {
   }
 
   _hashSensitiveValue(value) {
-    const secret =
-      process.env.GUARDIAN_RECOVERY_HASH_SECRET || this.guardianJwtSecret;
+    const secret = this.auditHashSecret;
 
     if (!secret) {
       throw this._createHttpError(
-        'Segredo de seguranca da recuperacao nao configurado.',
+        'Segredo de HMAC da auditoria nao configurado.',
         500
       );
     }
@@ -145,12 +195,89 @@ class GuardianAuthService {
   }
 
   _buildRequestHashes(requestMeta = {}) {
-    const ipHash = requestMeta.ip ? this._hashValue(requestMeta.ip) : null;
+    const ipHash = requestMeta.ip
+      ? this._hashSensitiveValue(requestMeta.ip)
+      : null;
     const userAgentHash = requestMeta.userAgent
-      ? this._hashValue(requestMeta.userAgent)
+      ? this._hashSensitiveValue(requestMeta.userAgent)
       : null;
 
     return { ipHash, userAgentHash };
+  }
+
+  _buildAuditContext(requestMeta = {}, { cpf = null, fallbackSource = 'api' } = {}) {
+    const { ipHash, userAgentHash } = this._buildRequestHashes(requestMeta);
+    const devicePlatform = normalizeDevicePlatform(requestMeta.devicePlatform);
+    const normalizedCpf = cpf ? normalizeCpf(cpf) : null;
+    const cpfHashInput = cpf ? String(cpf).replace(/\D/g, '') || 'invalid' : null;
+
+    return {
+      ipHash,
+      ipMasked: maskIp(requestMeta.ip),
+      userAgentHash,
+      userAgentSummary: summarizeUserAgent(
+        requestMeta.userAgent,
+        devicePlatform
+      ),
+      devicePlatform,
+      appVersion: normalizeAppVersion(requestMeta.appVersion),
+      source: normalizeSource(requestMeta.source, fallbackSource),
+      cpfHash: cpfHashInput ? this._hashSensitiveValue(cpfHashInput) : null,
+      cpfMasked: normalizedCpf ? maskCpf(normalizedCpf) : null,
+      correlationId: normalizeCorrelationId(requestMeta.correlationId),
+    };
+  }
+
+  _auditContextFromChallenge(challenge = {}, fallbackSource = 'api') {
+    return {
+      ipHash: challenge.ipHash || null,
+      ipMasked: challenge.ipMasked || null,
+      userAgentHash: challenge.userAgentHash || null,
+      userAgentSummary: challenge.userAgentSummary || null,
+      devicePlatform: challenge.devicePlatform || 'unknown',
+      appVersion: challenge.appVersion || null,
+      source: normalizeSource(challenge.source, fallbackSource),
+      cpfHash: challenge.cpfHash || null,
+      cpfMasked: challenge.cpfMasked || null,
+      correlationId: normalizeCorrelationId(challenge.correlationId),
+    };
+  }
+
+  _buildAdminActorSnapshot(actor = {}) {
+    return {
+      actorNameSnapshot:
+        sanitizeReasonText(actor.fullName || actor.name || actor.username) || null,
+      actorRoleSnapshot: this._extractRoles(actor).slice(0, 12),
+    };
+  }
+
+  async _runCriticalMutation(work) {
+    try {
+      return await this.runCriticalTransaction(work);
+    } catch (error) {
+      if (
+        /transaction numbers are only allowed|replica set|transactions are not supported/i.test(
+          String(error?.message || '')
+        )
+      ) {
+        throw this._createHttpError(
+          'Operacao critica indisponivel: o MongoDB precisa suportar transacoes.',
+          503,
+          { reason: 'guardian_audit_transaction_unavailable' }
+        );
+      }
+      throw error;
+    }
+  }
+
+  _withSession(query, session) {
+    return session && query && typeof query.session === 'function'
+      ? query.session(session)
+      : query;
+  }
+
+  _saveDocument(document, session) {
+    return document.save(session ? { session } : undefined);
   }
 
   _isDebugEnabled() {
@@ -234,12 +361,33 @@ class GuardianAuthService {
     tutorId = null,
     actorType,
     actorUserId = null,
+    actorNameSnapshot = null,
+    actorRoleSnapshot = [],
     eventType,
     metadata = {},
+    status = null,
+    source = 'unknown',
+    reasonCode = null,
+    reasonText = null,
+    affectedFields = [],
+    tokenVersionBefore = null,
+    tokenVersionAfter = null,
+    sessionsRevoked = false,
+    ipHash = null,
+    ipMasked = null,
+    userAgentHash = null,
+    userAgentSummary = null,
+    devicePlatform = 'unknown',
+    appVersion = null,
+    cpfHash = null,
+    cpfMasked = null,
+    correlationId = null,
+    session = null,
   }) {
     if (!schoolId || !actorType || !eventType) return null;
 
-    return this.GuardianAccessEventModel.create({
+    const safeMetadata = sanitizeEventMetadata(metadata);
+    const eventPayload = {
       school_id: schoolId,
       accountId,
       linkId,
@@ -249,9 +397,55 @@ class GuardianAuthService {
       tutorId,
       actorType,
       actorUserId,
+      actorNameSnapshot: actorNameSnapshot
+        ? String(actorNameSnapshot).trim().slice(0, 160)
+        : null,
+      actorRoleSnapshot: Array.isArray(actorRoleSnapshot)
+        ? actorRoleSnapshot.map(String).slice(0, 12)
+        : [],
       eventType,
-      metadata,
-    });
+      schemaVersion: 2,
+      status:
+        status && AUDIT_STATUSES.includes(status)
+          ? status
+          : inferEventStatus({ eventType }),
+      source: normalizeSource(source),
+      reasonCode:
+        normalizeReasonCode(reasonCode) ||
+        normalizeReasonCode(safeMetadata.reason),
+      reasonText: sanitizeReasonText(reasonText),
+      affectedFields: Array.isArray(affectedFields)
+        ? affectedFields
+            .map((field) => String(field || '').trim())
+            .filter((field) => /^[a-zA-Z0-9_.]+$/.test(field))
+            .slice(0, 20)
+        : [],
+      tokenVersionBefore:
+        Number.isInteger(tokenVersionBefore) ? tokenVersionBefore : null,
+      tokenVersionAfter:
+        Number.isInteger(tokenVersionAfter) ? tokenVersionAfter : null,
+      sessionsRevoked: Boolean(sessionsRevoked),
+      ipHash,
+      ipMasked,
+      userAgentHash,
+      userAgentSummary,
+      devicePlatform: normalizeDevicePlatform(devicePlatform),
+      appVersion: normalizeAppVersion(appVersion),
+      cpfHash,
+      cpfMasked,
+      correlationId: normalizeCorrelationId(correlationId),
+      metadata: safeMetadata,
+    };
+
+    if (session) {
+      const created = await this.GuardianAccessEventModel.create(
+        [eventPayload],
+        { session }
+      );
+      return created[0] || null;
+    }
+
+    return this.GuardianAccessEventModel.create(eventPayload);
   }
 
   async _registerEventBestEffort(scope, payload = {}) {
@@ -1190,10 +1384,6 @@ class GuardianAuthService {
 
     this._debugLog('first-access.find-students.input', {
       schoolId: schoolId ? String(schoolId) : null,
-      studentFullName,
-      fullNameNormalized,
-      birthDate,
-      birthDateKey,
     });
 
     const indexedMatches = await this.StudentModel.find(filter)
@@ -1403,13 +1593,8 @@ class GuardianAuthService {
       studentId: String(student._id),
       schoolId: String(resolvedSchoolId),
       relatedTutorIds: tutorIds,
-      tutors: tutorsWithEffectiveCpf.map((tutor) => ({
-        tutorId: String(tutor._id),
-        fullName: tutor.fullName,
-        cpfNormalized: tutor.cpfNormalized || null,
-        effectiveCpfNormalized: tutor.effectiveCpfNormalized || null,
-      })),
-      duplicateCpfKeys: [...duplicateCpfMap.keys()],
+      eligibleTutorsCount: tutorsWithEffectiveCpf.length,
+      duplicateCpfCount: duplicateCpfMap.size,
     });
 
     const guardianBucketByCpf = new Map();
@@ -1455,7 +1640,7 @@ class GuardianAuthService {
     requestMeta = {},
   }) {
     const now = this._getNow();
-    const { ipHash, userAgentHash } = this._buildRequestHashes(requestMeta);
+    const auditContext = this._buildAuditContext(requestMeta);
 
     return this.GuardianFirstAccessChallengeModel.create({
       school_id: schoolId,
@@ -1468,8 +1653,7 @@ class GuardianAuthService {
       })),
       stage: 'awaiting_selection',
       expiresAt: this._addMinutes(now, CHALLENGE_TTL_MINUTES),
-      ipHash,
-      userAgentHash,
+      ...auditContext,
     });
   }
 
@@ -1494,6 +1678,16 @@ class GuardianAuthService {
         'verifiedAt',
         'completedAt',
         'expiresAt',
+        'ipHash',
+        'ipMasked',
+        'userAgentHash',
+        'userAgentSummary',
+        'cpfHash',
+        'cpfMasked',
+        'devicePlatform',
+        'appVersion',
+        'source',
+        'correlationId',
         includeVerificationHash ? '+verificationTokenHash' : null,
       ]
         .filter(Boolean)
@@ -1561,6 +1755,7 @@ class GuardianAuthService {
         blocked: challenge.stage === 'blocked',
         ...metadata,
       },
+      ...this._auditContextFromChallenge(challenge),
     });
   }
 
@@ -1629,7 +1824,6 @@ class GuardianAuthService {
     } catch (error) {
       this._debugLog('first-access.verify-responsible.persist-cpf-normalized-failed', {
         tutorId: String(tutorId),
-        cpfNormalized,
         message: error?.message || 'unknown_error',
       });
       return false;
@@ -1676,6 +1870,7 @@ class GuardianAuthService {
         actorType: 'public',
         eventType: failedEventType,
         metadata: { reason: 'invalid_verification_token' },
+        ...this._auditContextFromChallenge(challenge),
       });
 
       throw this._createHttpError('Token de verificacao invalido.', 401);
@@ -1689,8 +1884,9 @@ class GuardianAuthService {
     tutorId,
     relationshipSnapshot = 'Responsavel',
     source = 'first_access',
+    session = null,
   }) {
-    return this.GuardianAccessLinkModel.findOneAndUpdate(
+    const query = this.GuardianAccessLinkModel.findOneAndUpdate(
       {
         school_id: schoolId,
         guardianAccessAccountId: accountId,
@@ -1713,8 +1909,10 @@ class GuardianAuthService {
         new: true,
         upsert: true,
         runValidators: true,
+        ...(session ? { session } : {}),
       }
     );
+    return query;
   }
 
   async _findExistingGuardianAccountForTutor({
@@ -1732,7 +1930,7 @@ class GuardianAuthService {
     });
   }
 
-  async _findOrCreateGuardianAccount({ schoolId, tutor, pin }) {
+  async _findOrCreateGuardianAccount({ schoolId, tutor, pin, session = null }) {
     const identifierNormalized = tutor?.cpfNormalized || normalizeCpf(tutor?.cpf);
 
     if (!identifierNormalized) {
@@ -1742,10 +1940,12 @@ class GuardianAuthService {
     const pinHash = await this.bcrypt.hash(String(pin), PIN_SALT_ROUNDS);
     const identifierMasked = maskCpf(identifierNormalized);
 
-    let account = await this.GuardianAccessAccountModel.findOne({
+    let accountQuery = this.GuardianAccessAccountModel.findOne({
       school_id: schoolId,
       $or: [{ tutorId: tutor._id }, { identifierNormalized }],
     }).select('+pinHash');
+    accountQuery = this._withSession(accountQuery, session);
+    const account = await accountQuery;
 
     if (account) {
       throw this._createHttpError(
@@ -1757,7 +1957,7 @@ class GuardianAuthService {
       );
     }
 
-    return this.GuardianAccessAccountModel.create({
+    const payload = {
       school_id: schoolId,
       tutorId: tutor._id,
       identifierType: 'cpf',
@@ -1770,7 +1970,16 @@ class GuardianAuthService {
       failedLoginCount: 0,
       blockedUntil: null,
       lastFailedAt: null,
-    });
+    };
+
+    if (session) {
+      const created = await this.GuardianAccessAccountModel.create([payload], {
+        session,
+      });
+      return created[0];
+    }
+
+    return this.GuardianAccessAccountModel.create(payload);
   }
 
   async _syncAccountLinksForTutor({
@@ -1857,12 +2066,10 @@ class GuardianAuthService {
     birthDate,
     requestMeta = {},
   }) {
+    const requestAuditContext = this._buildAuditContext(requestMeta);
     this._debugLog('first-access.request', {
       schoolPublicId: schoolPublicId || null,
-      studentFullName,
-      birthDate,
-      normalizedStudentFullName: normalizeName(studentFullName),
-      normalizedBirthDateKey: buildBirthDateKey(birthDate),
+      correlationId: requestAuditContext.correlationId,
     });
 
     let school = null;
@@ -1898,6 +2105,7 @@ class GuardianAuthService {
           actorType: 'public',
           eventType: GUARDIAN_ACCESS_EVENT_TYPES.FIRST_ACCESS_FAILED,
           metadata: { reason: 'student_not_found' },
+          ...requestAuditContext,
         });
       }
 
@@ -1924,6 +2132,7 @@ class GuardianAuthService {
             reason: 'student_ambiguous',
             matches: studentResult.students.length,
           },
+          ...requestAuditContext,
         });
       }
 
@@ -1952,6 +2161,7 @@ class GuardianAuthService {
         actorType: 'public',
         eventType: GUARDIAN_ACCESS_EVENT_TYPES.FIRST_ACCESS_FAILED,
         metadata: { reason: 'no_eligible_guardian' },
+        ...requestAuditContext,
       });
 
       throw this._createHttpError(
@@ -1984,6 +2194,7 @@ class GuardianAuthService {
       metadata: {
         guardiansCount: guardians.length,
       },
+      ...this._auditContextFromChallenge(challenge),
     });
 
     return {
@@ -2006,8 +2217,6 @@ class GuardianAuthService {
     this._debugLog('first-access.verify-responsible.received', {
       challengeId: challengeId || null,
       optionId: optionId || null,
-      cpfRaw: cpf || null,
-      cpfNormalized: normalizedCpf,
     });
 
     try {
@@ -2016,8 +2225,6 @@ class GuardianAuthService {
       this._debugLog('first-access.verify-responsible.challenge-failed', {
         challengeId: challengeId || null,
         optionId: optionId || null,
-        cpfRaw: cpf || null,
-        cpfNormalized: normalizedCpf,
         reason: error?.reason || 'challenge_invalid_or_expired',
         message: error?.message || null,
       });
@@ -2054,16 +2261,8 @@ class GuardianAuthService {
       challengeSelectedTutorId: challenge.selectedTutorId
         ? String(challenge.selectedTutorId)
         : null,
-      tutor: {
-        tutorId: tutor?._id ? String(tutor._id) : null,
-        fullName: tutor?.fullName || null,
-        schoolId: tutor?.school_id ? String(tutor.school_id) : null,
-        cpf: tutor?.cpf || null,
-        cpfNormalized: tutorCpfNormalized,
-        effectiveCpfNormalized: effectiveTutorCpfNormalized,
-      },
-      cpfRaw: cpf || null,
-      cpfNormalized: normalizedCpf,
+      tutorId: tutor?._id ? String(tutor._id) : null,
+      schoolId: tutor?.school_id ? String(tutor.school_id) : null,
     });
 
     if (!normalizedCpf || !isValidCpf(normalizedCpf)) {
@@ -2071,8 +2270,6 @@ class GuardianAuthService {
         challengeId: String(challenge._id),
         optionId: optionId || null,
         selectedTutorId: String(candidate.tutorId),
-        cpfRaw: cpf || null,
-        cpfNormalized: normalizedCpf,
         reason: 'invalid_cpf_format',
       });
 
@@ -2092,11 +2289,6 @@ class GuardianAuthService {
         challengeId: String(challenge._id),
         optionId: optionId || null,
         selectedTutorId: String(candidate.tutorId),
-        cpfRaw: cpf || null,
-        cpfNormalized: normalizedCpf,
-        tutorCpf: tutor?.cpf || null,
-        tutorCpfNormalized: tutorCpfNormalized,
-        legacyCpfNormalized,
         comparisonResult: false,
         reason: 'tutor_cpf_missing',
       });
@@ -2118,12 +2310,6 @@ class GuardianAuthService {
         challengeId: String(challenge._id),
         optionId: optionId || null,
         selectedTutorId: String(candidate.tutorId),
-        cpfRaw: cpf || null,
-        cpfNormalized: normalizedCpf,
-        tutorCpf: tutor?.cpf || null,
-        tutorCpfNormalized: tutorCpfNormalized,
-        legacyCpfNormalized,
-        effectiveTutorCpfNormalized,
         comparisonResult: false,
         reason: 'tutor_cpf_mismatch',
       });
@@ -2152,12 +2338,6 @@ class GuardianAuthService {
       challengeId: String(challenge._id),
       optionId: optionId || null,
       selectedTutorId: String(candidate.tutorId),
-      cpfRaw: cpf || null,
-      cpfNormalized: normalizedCpf,
-      tutorCpf: tutor?.cpf || null,
-      tutorCpfNormalized: tutorCpfNormalized,
-      legacyCpfNormalized,
-      effectiveTutorCpfNormalized,
       comparisonResult: true,
       reason: isLegacyTutorWithoutNormalized
         ? 'tutor_cpf_legacy_not_normalized'
@@ -2204,6 +2384,8 @@ class GuardianAuthService {
     }
 
     challenge.selectedTutorId = tutor._id;
+    challenge.cpfHash = this._hashSensitiveValue(normalizedCpf);
+    challenge.cpfMasked = maskCpf(normalizedCpf);
     challenge.failedCpfAttempts = 0;
     challenge.verifiedAt = this._getNow();
     challenge.existingAccountId = existingAccount?._id || null;
@@ -2229,6 +2411,7 @@ class GuardianAuthService {
           legacyCpfNormalizedRecovered: isLegacyTutorWithoutNormalized,
           legacyCpfNormalizedPersisted: persistedLegacyCpfNormalized,
         },
+        ...this._auditContextFromChallenge(challenge),
       });
 
       return {
@@ -2260,6 +2443,7 @@ class GuardianAuthService {
         legacyCpfNormalizedRecovered: isLegacyTutorWithoutNormalized,
         legacyCpfNormalizedPersisted: persistedLegacyCpfNormalized,
       },
+      ...this._auditContextFromChallenge(challenge),
     });
 
     return {
@@ -2311,7 +2495,12 @@ class GuardianAuthService {
     return { count, blocked: count > limit };
   }
 
-  async _assertPinRecoveryRateLimit({ cpfHash, ipHash, schoolId = null }) {
+  async _assertPinRecoveryRateLimit({
+    cpfHash,
+    ipHash,
+    schoolId = null,
+    auditContext = {},
+  }) {
     const cpfLimit = await this._consumePinRecoveryRateLimit({
       scope: 'cpf',
       keyHash: cpfHash,
@@ -2338,6 +2527,7 @@ class GuardianAuthService {
           reason: 'rate_limit',
           scope: cpfLimit.blocked ? 'identity' : 'ip',
         },
+        ...auditContext,
       });
     }
 
@@ -2482,6 +2672,7 @@ class GuardianAuthService {
         actorType: 'public',
         eventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_RECOVERY_FAILED,
         metadata: { reason },
+        ...this._auditContextFromChallenge(challenge),
       });
     }
 
@@ -2500,13 +2691,11 @@ class GuardianAuthService {
   }) {
     const cpfDigits = String(cpf || '').replace(/\D/g, '');
     const cpfNormalized = normalizeCpf(cpfDigits);
-    const cpfHash = this._hashSensitiveValue(cpfDigits || 'invalid');
-    const ipHash = requestMeta.ip
-      ? this._hashSensitiveValue(requestMeta.ip)
-      : null;
-    const userAgentHash = requestMeta.userAgent
-      ? this._hashSensitiveValue(requestMeta.userAgent)
-      : null;
+    const auditContext = this._buildAuditContext(requestMeta, {
+      cpf: cpfDigits || 'invalid',
+    });
+    const cpfHash = auditContext.cpfHash;
+    const ipHash = auditContext.ipHash;
     let school = null;
 
     if ((schoolPublicId || '').trim()) {
@@ -2521,6 +2710,7 @@ class GuardianAuthService {
       cpfHash,
       ipHash,
       schoolId: school?._id || null,
+      auditContext,
     });
 
     const now = this._getNow();
@@ -2529,9 +2719,11 @@ class GuardianAuthService {
       stage: 'attempted',
       failedAttempts: 0,
       expiresAt: this._addMinutes(now, PIN_RECOVERY_TTL_MINUTES),
-      ipHash,
-      cpfHash,
-      userAgentHash,
+      purgeAt: this._addMinutes(
+        now,
+        PIN_RECOVERY_TTL_MINUTES + PIN_RECOVERY_PURGE_DELAY_MINUTES
+      ),
+      ...auditContext,
     });
 
     if (
@@ -2597,6 +2789,7 @@ class GuardianAuthService {
       actorType: 'public',
       eventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_RECOVERY_STARTED,
       metadata: { expiresInSeconds: PIN_RECOVERY_TTL_MINUTES * 60 },
+      ...this._auditContextFromChallenge(challenge),
     });
 
     return {
@@ -2631,11 +2824,50 @@ class GuardianAuthService {
             reason,
             attempts: challenge.failedAttempts,
           },
+          ...this._auditContextFromChallenge(challenge),
         }
       );
     }
 
     return blocked;
+  }
+
+  async expirePinRecoveryChallenges({ limit = 100 } = {}) {
+    const now = this._getNow();
+    const challenges = await this.GuardianPinRecoveryChallengeModel.find({
+      expiresAt: { $lte: now },
+      stage: { $in: ['attempted', 'awaiting_pin', 'processing'] },
+    })
+      .sort({ expiresAt: 1 })
+      .limit(Math.min(Math.max(Number(limit) || 100, 1), 500));
+    let expiredCount = 0;
+
+    for (const challenge of challenges) {
+      challenge.stage = 'expired';
+      await challenge.save();
+      expiredCount += 1;
+
+      if (challenge.school_id) {
+        await this._registerEventBestEffort(
+          'pin-recovery.expiration-sweep.event-failed',
+          {
+            schoolId: challenge.school_id,
+            accountId: challenge.guardianAccessAccountId || null,
+            recoveryChallengeId: challenge._id,
+            studentId: challenge.studentId || null,
+            tutorId: challenge.tutorId || null,
+            actorType: 'system',
+            eventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_RECOVERY_EXPIRED,
+            status: 'expired',
+            source: 'system',
+            reasonCode: 'challenge_expired',
+            ...this._auditContextFromChallenge(challenge, 'system'),
+          }
+        );
+      }
+    }
+
+    return { expiredCount };
   }
 
   async completePinRecovery({ challengeId, verificationToken, newPin }) {
@@ -2662,6 +2894,23 @@ class GuardianAuthService {
     if (challenge.expiresAt && new Date(challenge.expiresAt) <= now) {
       challenge.stage = 'expired';
       await challenge.save();
+      if (challenge.school_id) {
+        await this._registerEventBestEffort(
+          'pin-recovery.expired.event-failed',
+          {
+            schoolId: challenge.school_id,
+            accountId: challenge.guardianAccessAccountId || null,
+            recoveryChallengeId: challenge._id,
+            studentId: challenge.studentId || null,
+            tutorId: challenge.tutorId || null,
+            actorType: 'public',
+            eventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_RECOVERY_EXPIRED,
+            status: 'expired',
+            reasonCode: 'challenge_expired',
+            ...this._auditContextFromChallenge(challenge),
+          }
+        );
+      }
       throw this._createHttpError('O prazo para recuperacao expirou.', 410, {
         reason: 'pin_recovery_challenge_expired',
       });
@@ -2723,19 +2972,25 @@ class GuardianAuthService {
     }
 
     try {
-      const account =
-        await this.GuardianAccessAccountModel.findOne({
+      return await this._runCriticalMutation(async (session) => {
+        let accountQuery = this.GuardianAccessAccountModel.findOne({
           _id: claimedChallenge.guardianAccessAccountId,
           school_id: claimedChallenge.school_id,
           tutorId: claimedChallenge.tutorId,
         }).select('+pinHash');
-      const tutor = await this.TutorModel.findOne({
+        accountQuery = this._withSession(accountQuery, session);
+        const account = await accountQuery;
+
+        let tutorQuery = this.TutorModel.findOne({
         _id: claimedChallenge.tutorId,
         school_id: claimedChallenge.school_id,
       })
         .select('_id cpf cpfNormalized school_id')
         .lean();
-      const student = await this.StudentModel.findOne({
+        tutorQuery = this._withSession(tutorQuery, session);
+        const tutor = await tutorQuery;
+
+        let studentQuery = this.StudentModel.findOne({
         _id: claimedChallenge.studentId,
         school_id: claimedChallenge.school_id,
         isActive: true,
@@ -2746,6 +3001,8 @@ class GuardianAuthService {
       })
         .select('_id school_id')
         .lean();
+        studentQuery = this._withSession(studentQuery, session);
+        const student = await studentQuery;
 
       const accountCpfHash = account?.identifierNormalized
         ? this._hashSensitiveValue(account.identifierNormalized)
@@ -2767,45 +3024,70 @@ class GuardianAuthService {
         });
       }
 
-      account.pinHash = await this.bcrypt.hash(
-        String(newPin),
-        PIN_SALT_ROUNDS
-      );
-      account.status = 'active';
-      account.activatedAt = account.activatedAt || now;
-      account.pinUpdatedAt = now;
-      account.failedLoginCount = 0;
-      account.lastFailedAt = null;
-      account.blockedUntil = null;
-      account.tokenVersion = Number(account.tokenVersion || 0) + 1;
-      await account.save();
+        const tokenVersionBefore = Number(account.tokenVersion || 0);
+        const tokenVersionAfter = tokenVersionBefore + 1;
+        const auditContext = this._auditContextFromChallenge(claimedChallenge);
 
-      claimedChallenge.stage = 'completed';
-      claimedChallenge.completedAt = now;
-      claimedChallenge.verificationTokenHash = null;
-      await claimedChallenge.save();
+        account.pinHash = await this.bcrypt.hash(
+          String(newPin),
+          PIN_SALT_ROUNDS
+        );
+        account.status = 'active';
+        account.activatedAt = account.activatedAt || now;
+        account.pinUpdatedAt = now;
+        account.failedLoginCount = 0;
+        account.lastFailedAt = null;
+        account.blockedUntil = null;
+        account.tokenVersion = tokenVersionAfter;
+        await this._saveDocument(account, session);
 
-      await this._registerEventBestEffort(
-        'pin-recovery.succeeded.event-failed',
-        {
+        claimedChallenge.stage = 'completed';
+        claimedChallenge.completedAt = now;
+        claimedChallenge.verificationTokenHash = null;
+        await this._saveDocument(claimedChallenge, session);
+
+        const commonEvent = {
           schoolId: account.school_id,
           accountId: account._id,
           recoveryChallengeId: claimedChallenge._id,
           studentId: claimedChallenge.studentId,
           tutorId: account.tutorId,
-          actorType: 'public',
-          eventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_RECOVERY_SUCCEEDED,
-          metadata: { result: 'pin_updated' },
-        }
-      );
+          actorType: 'guardian',
+          tokenVersionBefore,
+          tokenVersionAfter,
+          ...auditContext,
+          session,
+        };
 
-      return {
-        status: 'pin_updated',
-        identifierType: account.identifierType,
-        identifierMasked: account.identifierMasked,
-        message:
-          'PIN atualizado. Entre novamente com seu CPF e o novo PIN.',
-      };
+        await this._registerEvent({
+          ...commonEvent,
+          eventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_RECOVERY_SUCCEEDED,
+          affectedFields: ['pinHash', 'pinUpdatedAt', 'status'],
+          sessionsRevoked: true,
+          metadata: { result: 'pin_updated' },
+        });
+        await this._registerEvent({
+          ...commonEvent,
+          eventType: GUARDIAN_ACCESS_EVENT_TYPES.GUARDIAN_PIN_UPDATED,
+          affectedFields: ['pinHash', 'pinUpdatedAt'],
+          sessionsRevoked: true,
+        });
+        await this._registerEvent({
+          ...commonEvent,
+          eventType: GUARDIAN_ACCESS_EVENT_TYPES.GUARDIAN_SESSIONS_REVOKED,
+          status: 'revoked',
+          affectedFields: ['tokenVersion'],
+          sessionsRevoked: true,
+        });
+
+        return {
+          status: 'pin_updated',
+          identifierType: account.identifierType,
+          identifierMasked: account.identifierMasked,
+          message:
+            'PIN atualizado. Entre novamente com seu CPF e o novo PIN.',
+        };
+      });
     } catch (error) {
       claimedChallenge.stage = 'failed';
       claimedChallenge.verificationTokenHash = null;
@@ -2822,6 +3104,7 @@ class GuardianAuthService {
           actorType: 'public',
           eventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_RECOVERY_FAILED,
           metadata: { reason: error.reason || 'completion_failed' },
+          ...this._auditContextFromChallenge(claimedChallenge),
         }
       );
 
@@ -2851,48 +3134,55 @@ class GuardianAuthService {
 
     const tutor = await this._loadChallengeTutor(challenge);
 
-    const account = await this._findOrCreateGuardianAccount({
-      schoolId: challenge.school_id,
-      tutor,
-      pin,
-    });
-
     const relationshipSnapshot =
       challenge.candidateGuardians.find(
         (item) => String(item.tutorId) === String(tutor._id)
       )?.relationship || 'Responsavel';
-    const link = await this._upsertGuardianStudentLink({
-      schoolId: challenge.school_id,
-      accountId: account._id,
-      studentId: challenge.studentId,
-      tutorId: tutor._id,
-      relationshipSnapshot,
-      source: 'first_access',
+
+    return this._runCriticalMutation(async (session) => {
+      const account = await this._findOrCreateGuardianAccount({
+        schoolId: challenge.school_id,
+        tutor,
+        pin,
+        session,
+      });
+      const link = await this._upsertGuardianStudentLink({
+        schoolId: challenge.school_id,
+        accountId: account._id,
+        studentId: challenge.studentId,
+        tutorId: tutor._id,
+        relationshipSnapshot,
+        source: 'first_access',
+        session,
+      });
+
+      challenge.stage = 'completed';
+      challenge.completedAt = this._getNow();
+      challenge.verificationTokenHash = null;
+      await this._saveDocument(challenge, session);
+
+      await this._registerEvent({
+        schoolId: challenge.school_id,
+        accountId: account._id,
+        linkId: link?._id || null,
+        challengeId: challenge._id,
+        studentId: challenge.studentId,
+        tutorId: tutor._id,
+        actorType: 'public',
+        eventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_SET,
+        affectedFields: ['pinHash', 'pinUpdatedAt', 'status'],
+        metadata: { identifierType: 'cpf' },
+        ...this._auditContextFromChallenge(challenge),
+        session,
+      });
+
+      return {
+        status: 'pin_configured',
+        identifierType: 'cpf',
+        identifierMasked: account.identifierMasked,
+        message: 'PIN configurado com sucesso.',
+      };
     });
-
-    challenge.stage = 'completed';
-    challenge.completedAt = this._getNow();
-    challenge.verificationTokenHash = null;
-    await challenge.save();
-
-    await this._registerEventBestEffort('first-access.pin-set.event-failed', {
-      schoolId: challenge.school_id,
-      accountId: account._id,
-      linkId: link?._id || null,
-      challengeId: challenge._id,
-      studentId: challenge.studentId,
-      tutorId: tutor._id,
-      actorType: 'public',
-      eventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_SET,
-      metadata: { identifierType: 'cpf' },
-    });
-
-    return {
-      status: 'pin_configured',
-      identifierType: 'cpf',
-      identifierMasked: account.identifierMasked,
-      message: 'PIN configurado com sucesso.',
-    };
   }
 
   async linkExistingAccount({ challengeId, verificationToken, pin }) {
@@ -2942,7 +3232,7 @@ class GuardianAuthService {
     if (!isMatch) {
       await this._registerLoginFailure(account, {
         reason: 'existing_account_pin_mismatch',
-      });
+      }, this._auditContextFromChallenge(challenge));
 
       if (
         account.blockedUntil &&
@@ -3024,7 +3314,7 @@ class GuardianAuthService {
     );
   }
 
-  async _registerLoginFailure(account, metadata = {}) {
+  async _registerLoginFailure(account, metadata = {}, auditContext = {}) {
     const now = this._getNow();
     account.failedLoginCount = Number(account.failedLoginCount || 0) + 1;
     account.lastFailedAt = now;
@@ -3035,9 +3325,9 @@ class GuardianAuthService {
       blocked = true;
     }
 
-    await account.save();
-
-    await this._registerEvent({
+    const persist = async (session = null) => {
+      await this._saveDocument(account, session);
+      await this._registerEvent({
       schoolId: account.school_id,
       accountId: account._id,
       tutorId: account.tutorId,
@@ -3050,7 +3340,16 @@ class GuardianAuthService {
         blockedUntil: account.blockedUntil,
         ...metadata,
       },
-    });
+        ...auditContext,
+        session,
+      });
+    };
+
+    if (blocked) {
+      await this._runCriticalMutation(persist);
+    } else {
+      await persist();
+    }
   }
 
   async _findGuardianAccounts(filter = {}, { includePinHash = false } = {}) {
@@ -3080,7 +3379,7 @@ class GuardianAuthService {
     });
   }
 
-  async _completeGuardianLogin(account) {
+  async _completeGuardianLogin(account, auditContext = {}) {
     account.failedLoginCount = 0;
     account.lastFailedAt = null;
     account.blockedUntil = null;
@@ -3100,6 +3399,7 @@ class GuardianAuthService {
       metadata: {
         linkedStudentsCount: loginContext.linkedStudentsCount,
       },
+      ...auditContext,
     });
 
     const school = await this._getSchoolSummaryById(account.school_id);
@@ -3120,10 +3420,13 @@ class GuardianAuthService {
     };
   }
 
-  async login({ schoolPublicId, identifier, pin }) {
+  async login({ schoolPublicId, identifier, pin, requestMeta = {} }) {
     this._assertValidPin(pin);
 
     const normalizedCpf = normalizeCpf(identifier);
+    const auditContext = this._buildAuditContext(requestMeta, {
+      cpf: normalizedCpf,
+    });
 
     if (!normalizedCpf || !isValidCpf(normalizedCpf)) {
       throw this._createHttpError('CPF ou PIN invalidos.', 401);
@@ -3154,6 +3457,7 @@ class GuardianAuthService {
             blockedUntil: account.blockedUntil,
             reason: 'login_while_blocked',
           },
+          ...auditContext,
         });
 
         throw this._createHttpError(
@@ -3165,7 +3469,11 @@ class GuardianAuthService {
       const isMatch = await this.bcrypt.compare(String(pin), account.pinHash);
 
       if (!isMatch) {
-        await this._registerLoginFailure(account, { reason: 'pin_mismatch' });
+        await this._registerLoginFailure(
+          account,
+          { reason: 'pin_mismatch' },
+          auditContext
+        );
 
         if (
           account.blockedUntil &&
@@ -3180,7 +3488,7 @@ class GuardianAuthService {
         throw this._createHttpError('CPF ou PIN invalidos.', 401);
       }
 
-      return this._completeGuardianLogin(account);
+      return this._completeGuardianLogin(account, auditContext);
     }
 
     const accounts = await this._findGuardianAccounts(
@@ -3213,6 +3521,7 @@ class GuardianAuthService {
             blockedUntil: account.blockedUntil,
             reason: 'login_while_blocked',
           },
+          ...auditContext,
         });
 
         throw this._createHttpError(
@@ -3224,7 +3533,11 @@ class GuardianAuthService {
       const isMatch = await this.bcrypt.compare(String(pin), account.pinHash);
 
       if (!isMatch) {
-        await this._registerLoginFailure(account, { reason: 'pin_mismatch' });
+        await this._registerLoginFailure(
+          account,
+          { reason: 'pin_mismatch' },
+          auditContext
+        );
 
         if (
           account.blockedUntil &&
@@ -3239,7 +3552,7 @@ class GuardianAuthService {
         throw this._createHttpError('CPF ou PIN invalidos.', 401);
       }
 
-      return this._completeGuardianLogin(account);
+      return this._completeGuardianLogin(account, auditContext);
     }
 
     const matchingAccounts = [];
@@ -3260,7 +3573,7 @@ class GuardianAuthService {
     }
 
     if (matchingAccounts.length === 1) {
-      return this._completeGuardianLogin(matchingAccounts[0]);
+      return this._completeGuardianLogin(matchingAccounts[0], auditContext);
     }
 
     if (matchingAccounts.length > 1) {
@@ -3358,6 +3671,156 @@ class GuardianAuthService {
             'pt-BR'
           )
         ),
+    };
+  }
+
+  async listGuardianAccessEvents({
+    schoolId,
+    accountId,
+    actor,
+    filters = {},
+  }) {
+    this._assertAdminActor(actor);
+
+    if (!mongoose.isValidObjectId(accountId)) {
+      throw this._createHttpError('Conta de responsavel invalida.', 400);
+    }
+
+    const account = await this.GuardianAccessAccountModel.findOne({
+      _id: accountId,
+      school_id: schoolId,
+    }).select('_id tutorId');
+
+    if (!account) {
+      throw this._createHttpError('Conta de responsavel nao encontrada.', 404);
+    }
+
+    const eventFilter = {
+      school_id: schoolId,
+      accountId: account._id,
+    };
+    const { studentId, tutorId, eventType, status, from, to, cursor } = filters;
+
+    if (studentId) {
+      if (!mongoose.isValidObjectId(studentId)) {
+        throw this._createHttpError('Aluno invalido.', 400);
+      }
+      const link = await this.GuardianAccessLinkModel.findOne({
+        school_id: schoolId,
+        guardianAccessAccountId: account._id,
+        studentId,
+      });
+      if (!link) {
+        throw this._createHttpError(
+          'Aluno nao esta vinculado a esta conta de responsavel.',
+          404
+        );
+      }
+      eventFilter.studentId = studentId;
+    }
+
+    if (tutorId) {
+      if (
+        !mongoose.isValidObjectId(tutorId) ||
+        String(account.tutorId) !== String(tutorId)
+      ) {
+        throw this._createHttpError(
+          'Responsavel nao esta vinculado a esta conta.',
+          404
+        );
+      }
+      eventFilter.tutorId = tutorId;
+    }
+
+    if (eventType) {
+      if (!GUARDIAN_ACCESS_EVENT_TYPE_VALUES.includes(eventType)) {
+        throw this._createHttpError('Tipo de evento invalido.', 400);
+      }
+      eventFilter.eventType = eventType;
+    }
+
+    if (status) {
+      if (!AUDIT_STATUSES.includes(status)) {
+        throw this._createHttpError('Status de evento invalido.', 400);
+      }
+      const legacyEventTypes = LEGACY_EVENT_TYPES_BY_STATUS[status] || [];
+      eventFilter.$and = [
+        {
+          $or: [
+            { status },
+            ...(legacyEventTypes.length
+              ? [
+                  {
+                    status: { $exists: false },
+                    eventType: { $in: legacyEventTypes },
+                  },
+                ]
+              : []),
+          ],
+        },
+      ];
+    }
+
+    const createdAt = {};
+    if (from) {
+      const parsedFrom = new Date(from);
+      if (Number.isNaN(parsedFrom.getTime())) {
+        throw this._createHttpError('Data inicial invalida.', 400);
+      }
+      createdAt.$gte = parsedFrom;
+    }
+    if (to) {
+      const parsedTo = new Date(to);
+      if (Number.isNaN(parsedTo.getTime())) {
+        throw this._createHttpError('Data final invalida.', 400);
+      }
+      createdAt.$lte = parsedTo;
+    }
+    if (createdAt.$gte && createdAt.$lte && createdAt.$gte > createdAt.$lte) {
+      throw this._createHttpError(
+        'A data inicial deve ser anterior a data final.',
+        400
+      );
+    }
+    if (Object.keys(createdAt).length) eventFilter.createdAt = createdAt;
+
+    if (cursor) {
+      const decodedCursor = decodeEventCursor(cursor);
+      if (
+        !decodedCursor ||
+        !mongoose.isValidObjectId(decodedCursor.id)
+      ) {
+        throw this._createHttpError('Cursor invalido.', 400);
+      }
+      eventFilter.$and = [
+        ...(eventFilter.$and || []),
+        {
+          $or: [
+            { createdAt: { $lt: decodedCursor.createdAt } },
+            {
+              createdAt: decodedCursor.createdAt,
+              _id: { $lt: decodedCursor.id },
+            },
+          ],
+        },
+      ];
+    }
+
+    const parsedLimit = Number.parseInt(filters.limit, 10);
+    const limit = Number.isFinite(parsedLimit)
+      ? Math.min(Math.max(parsedLimit, 1), 100)
+      : 25;
+    const events = await this.GuardianAccessEventModel.find(eventFilter)
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(limit + 1)
+      .lean();
+    const hasMore = events.length > limit;
+    const page = hasMore ? events.slice(0, limit) : events;
+
+    return {
+      items: page.map(buildGuardianAccessEventDto),
+      nextCursor: hasMore ? encodeEventCursor(page[page.length - 1]) : null,
+      hasMore,
     };
   }
 
@@ -3708,13 +4171,15 @@ class GuardianAuthService {
     };
   }
 
-  async _getAdminAccountOrThrow(accountId, schoolId, actor) {
+  async _getAdminAccountOrThrow(accountId, schoolId, actor, session = null) {
     this._assertAdminActor(actor);
 
-    const account = await this.GuardianAccessAccountModel.findOne({
+    let query = this.GuardianAccessAccountModel.findOne({
       _id: accountId,
       school_id: schoolId,
     }).select('+pinHash');
+    query = this._withSession(query, session);
+    const account = await query;
 
     if (!account) {
       throw this._createHttpError('Conta de responsavel nao encontrada.', 404);
@@ -3723,113 +4188,246 @@ class GuardianAuthService {
     return account;
   }
 
-  async resetPin({ schoolId, accountId, actor }) {
-    const account = await this._getAdminAccountOrThrow(accountId, schoolId, actor);
-
-    account.pinHash = null;
-    account.status = 'pending';
-    account.pinUpdatedAt = null;
-    account.failedLoginCount = 0;
-    account.lastFailedAt = null;
-    account.blockedUntil = null;
-    account.tokenVersion = Number(account.tokenVersion || 0) + 1;
-    await account.save();
-
-    await this._registerEvent({
-      schoolId,
-      accountId: account._id,
-      tutorId: account.tutorId,
-      actorType: 'staff',
-      actorUserId: actor.id || actor._id || null,
-      eventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_RESET,
-      metadata: { newStatus: 'pending' },
+  async resetPin({
+    schoolId,
+    accountId,
+    actor,
+    reasonCode = null,
+    reasonText = null,
+    requestMeta = {},
+  }) {
+    this._assertAdminActor(actor);
+    const auditContext = this._buildAuditContext(requestMeta, {
+      fallbackSource: 'desktop',
     });
+    const actorSnapshot = this._buildAdminActorSnapshot(actor);
 
-    return {
-      status: 'pending',
-      identifierType: account.identifierType,
-      identifierMasked: account.identifierMasked,
-      message:
-        'PIN resetado com sucesso. O responsavel precisara refazer o primeiro acesso.',
-    };
+    return this._runCriticalMutation(async (session) => {
+      const account = await this._getAdminAccountOrThrow(
+        accountId,
+        schoolId,
+        actor,
+        session
+      );
+      const tokenVersionBefore = Number(account.tokenVersion || 0);
+      const tokenVersionAfter = tokenVersionBefore + 1;
+
+      account.pinHash = null;
+      account.status = 'pending';
+      account.pinUpdatedAt = null;
+      account.failedLoginCount = 0;
+      account.lastFailedAt = null;
+      account.blockedUntil = null;
+      account.tokenVersion = tokenVersionAfter;
+      await this._saveDocument(account, session);
+
+      const commonEvent = {
+        schoolId,
+        accountId: account._id,
+        tutorId: account.tutorId,
+        actorType: 'staff',
+        actorUserId: actor.id || actor._id || null,
+        ...actorSnapshot,
+        ...auditContext,
+        cpfHash: this._hashSensitiveValue(account.identifierNormalized),
+        cpfMasked: account.identifierMasked,
+        reasonCode,
+        reasonText,
+        tokenVersionBefore,
+        tokenVersionAfter,
+        sessionsRevoked: true,
+        session,
+      };
+      await this._registerEvent({
+        ...commonEvent,
+        eventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_RESET,
+        affectedFields: ['pinHash', 'pinUpdatedAt', 'status', 'tokenVersion'],
+        metadata: { newStatus: 'pending' },
+      });
+      await this._registerEvent({
+        ...commonEvent,
+        eventType: GUARDIAN_ACCESS_EVENT_TYPES.GUARDIAN_SESSIONS_REVOKED,
+        status: 'revoked',
+        affectedFields: ['tokenVersion'],
+      });
+
+      return {
+        status: 'pending',
+        identifierType: account.identifierType,
+        identifierMasked: account.identifierMasked,
+        message:
+          'PIN resetado com sucesso. O responsavel devera usar a recuperacao de PIN.',
+      };
+    });
   }
 
-  async unlockAccount({ schoolId, accountId, actor }) {
-    const account = await this._getAdminAccountOrThrow(accountId, schoolId, actor);
-
-    account.failedLoginCount = 0;
-    account.lastFailedAt = null;
-    account.blockedUntil = null;
-    await account.save();
-
-    await this._registerEvent({
-      schoolId,
-      accountId: account._id,
-      tutorId: account.tutorId,
-      actorType: 'staff',
-      actorUserId: actor.id || actor._id || null,
-      eventType: GUARDIAN_ACCESS_EVENT_TYPES.ACCOUNT_UNLOCKED,
-      metadata: {},
+  async unlockAccount({
+    schoolId,
+    accountId,
+    actor,
+    reasonCode = null,
+    reasonText = null,
+    requestMeta = {},
+  }) {
+    this._assertAdminActor(actor);
+    const auditContext = this._buildAuditContext(requestMeta, {
+      fallbackSource: 'desktop',
     });
+    const actorSnapshot = this._buildAdminActorSnapshot(actor);
 
-    return {
-      status: this._getAccountStatus(account),
-      message: 'Conta desbloqueada com sucesso.',
-    };
+    return this._runCriticalMutation(async (session) => {
+      const account = await this._getAdminAccountOrThrow(
+        accountId,
+        schoolId,
+        actor,
+        session
+      );
+      account.failedLoginCount = 0;
+      account.lastFailedAt = null;
+      account.blockedUntil = null;
+      await this._saveDocument(account, session);
+
+      await this._registerEvent({
+        schoolId,
+        accountId: account._id,
+        tutorId: account.tutorId,
+        actorType: 'staff',
+        actorUserId: actor.id || actor._id || null,
+        ...actorSnapshot,
+        ...auditContext,
+        cpfHash: this._hashSensitiveValue(account.identifierNormalized),
+        cpfMasked: account.identifierMasked,
+        reasonCode,
+        reasonText,
+        eventType: GUARDIAN_ACCESS_EVENT_TYPES.ACCOUNT_UNLOCKED,
+        affectedFields: ['failedLoginCount', 'lastFailedAt', 'blockedUntil'],
+        session,
+      });
+
+      return {
+        status: this._getAccountStatus(account),
+        message: 'Conta desbloqueada com sucesso.',
+      };
+    });
   }
 
-  async deactivateAccount({ schoolId, accountId, actor }) {
-    const account = await this._getAdminAccountOrThrow(accountId, schoolId, actor);
-
-    account.status = 'inactive';
-    account.failedLoginCount = 0;
-    account.lastFailedAt = null;
-    account.blockedUntil = null;
-    account.tokenVersion = Number(account.tokenVersion || 0) + 1;
-    await account.save();
-
-    await this._registerEvent({
-      schoolId,
-      accountId: account._id,
-      tutorId: account.tutorId,
-      actorType: 'staff',
-      actorUserId: actor.id || actor._id || null,
-      eventType: GUARDIAN_ACCESS_EVENT_TYPES.ACCOUNT_DEACTIVATED,
-      metadata: {},
+  async deactivateAccount({
+    schoolId,
+    accountId,
+    actor,
+    reasonCode = null,
+    reasonText = null,
+    requestMeta = {},
+  }) {
+    this._assertAdminActor(actor);
+    const auditContext = this._buildAuditContext(requestMeta, {
+      fallbackSource: 'desktop',
     });
+    const actorSnapshot = this._buildAdminActorSnapshot(actor);
 
-    return {
-      status: 'inactive',
-      message: 'Conta desativada com sucesso.',
-    };
+    return this._runCriticalMutation(async (session) => {
+      const account = await this._getAdminAccountOrThrow(
+        accountId,
+        schoolId,
+        actor,
+        session
+      );
+      const tokenVersionBefore = Number(account.tokenVersion || 0);
+      const tokenVersionAfter = tokenVersionBefore + 1;
+
+      account.status = 'inactive';
+      account.failedLoginCount = 0;
+      account.lastFailedAt = null;
+      account.blockedUntil = null;
+      account.tokenVersion = tokenVersionAfter;
+      await this._saveDocument(account, session);
+
+      const commonEvent = {
+        schoolId,
+        accountId: account._id,
+        tutorId: account.tutorId,
+        actorType: 'staff',
+        actorUserId: actor.id || actor._id || null,
+        ...actorSnapshot,
+        ...auditContext,
+        cpfHash: this._hashSensitiveValue(account.identifierNormalized),
+        cpfMasked: account.identifierMasked,
+        reasonCode,
+        reasonText,
+        tokenVersionBefore,
+        tokenVersionAfter,
+        sessionsRevoked: true,
+        session,
+      };
+      await this._registerEvent({
+        ...commonEvent,
+        eventType: GUARDIAN_ACCESS_EVENT_TYPES.ACCOUNT_DEACTIVATED,
+        affectedFields: ['status', 'tokenVersion'],
+      });
+      await this._registerEvent({
+        ...commonEvent,
+        eventType: GUARDIAN_ACCESS_EVENT_TYPES.GUARDIAN_SESSIONS_REVOKED,
+        status: 'revoked',
+        affectedFields: ['tokenVersion'],
+      });
+
+      return {
+        status: 'inactive',
+        message: 'Conta desativada com sucesso.',
+      };
+    });
   }
 
-  async reactivateAccount({ schoolId, accountId, actor }) {
-    const account = await this._getAdminAccountOrThrow(accountId, schoolId, actor);
-
-    account.status = account.pinHash ? 'active' : 'pending';
-    account.failedLoginCount = 0;
-    account.lastFailedAt = null;
-    account.blockedUntil = null;
-    account.tokenVersion = Number(account.tokenVersion || 0) + 1;
-    await account.save();
-
-    await this._registerEvent({
-      schoolId,
-      accountId: account._id,
-      tutorId: account.tutorId,
-      actorType: 'staff',
-      actorUserId: actor.id || actor._id || null,
-      eventType: GUARDIAN_ACCESS_EVENT_TYPES.ACCOUNT_REACTIVATED,
-      metadata: {
-        restoredStatus: account.status,
-      },
+  async reactivateAccount({
+    schoolId,
+    accountId,
+    actor,
+    reasonCode = null,
+    reasonText = null,
+    requestMeta = {},
+  }) {
+    this._assertAdminActor(actor);
+    const auditContext = this._buildAuditContext(requestMeta, {
+      fallbackSource: 'desktop',
     });
+    const actorSnapshot = this._buildAdminActorSnapshot(actor);
 
-    return {
-      status: account.status,
-      message: 'Conta reativada com sucesso.',
-    };
+    return this._runCriticalMutation(async (session) => {
+      const account = await this._getAdminAccountOrThrow(
+        accountId,
+        schoolId,
+        actor,
+        session
+      );
+      account.status = account.pinHash ? 'active' : 'pending';
+      account.failedLoginCount = 0;
+      account.lastFailedAt = null;
+      account.blockedUntil = null;
+      await this._saveDocument(account, session);
+
+      await this._registerEvent({
+        schoolId,
+        accountId: account._id,
+        tutorId: account.tutorId,
+        actorType: 'staff',
+        actorUserId: actor.id || actor._id || null,
+        ...actorSnapshot,
+        ...auditContext,
+        cpfHash: this._hashSensitiveValue(account.identifierNormalized),
+        cpfMasked: account.identifierMasked,
+        reasonCode,
+        reasonText,
+        eventType: GUARDIAN_ACCESS_EVENT_TYPES.ACCOUNT_REACTIVATED,
+        affectedFields: ['status'],
+        metadata: { restoredStatus: account.status },
+        session,
+      });
+
+      return {
+        status: account.status,
+        message: 'Conta reativada com sucesso.',
+      };
+    });
   }
 
   async generateEligibilityReport({ schoolId = null, schoolPublicId = null } = {}) {

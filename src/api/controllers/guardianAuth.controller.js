@@ -1,9 +1,26 @@
+const crypto = require('crypto');
 const guardianAuthService = require('../services/guardianAuth.service');
 
-function buildRequestMeta(req) {
+function buildRequestMeta(req, fallbackSource = 'api') {
+  const requestedSource = String(
+    req.headers['x-client-source'] || ''
+  ).toLowerCase();
+  const source =
+    fallbackSource === 'desktop'
+      ? 'desktop'
+      : requestedSource === 'mobile'
+        ? 'mobile'
+        : 'api';
+
   return {
-    ip: req.ip || req.headers['x-forwarded-for'] || null,
+    ip: req.ip || null,
     userAgent: req.headers['user-agent'] || null,
+    source,
+    devicePlatform: req.headers['x-client-platform'] || 'unknown',
+    appVersion: req.headers['x-app-version'] || null,
+    correlationId:
+      req.guardianAuditCorrelationId ||
+      (req.guardianAuditCorrelationId = crypto.randomUUID()),
   };
 }
 
@@ -150,6 +167,7 @@ class GuardianAuthController {
         schoolPublicId: req.body?.schoolPublicId,
         identifier: req.body?.identifier || req.body?.cpf,
         pin: req.body?.pin,
+        requestMeta: buildRequestMeta(req),
       });
 
       return res.status(200).json(result);
@@ -173,6 +191,25 @@ class GuardianAuthController {
         res,
         error,
         'Nao foi possivel listar os acessos de responsaveis.'
+      );
+    }
+  }
+
+  async listGuardianAccessEvents(req, res) {
+    try {
+      const result = await guardianAuthService.listGuardianAccessEvents({
+        schoolId: getSchoolId(req),
+        accountId: req.params.accountId,
+        actor: req.user,
+        filters: req.query || {},
+      });
+
+      return res.status(200).json(result);
+    } catch (error) {
+      return sendError(
+        res,
+        error,
+        'Nao foi possivel consultar o historico de acesso.'
       );
     }
   }
@@ -306,6 +343,9 @@ class GuardianAuthController {
         schoolId,
         accountId: req.params.accountId,
         actor: req.user,
+        reasonCode: req.body?.reasonCode,
+        reasonText: req.body?.reasonText,
+        requestMeta: buildRequestMeta(req, 'desktop'),
       });
 
       return res.status(200).json(result);
@@ -321,6 +361,9 @@ class GuardianAuthController {
         schoolId,
         accountId: req.params.accountId,
         actor: req.user,
+        reasonCode: req.body?.reasonCode,
+        reasonText: req.body?.reasonText,
+        requestMeta: buildRequestMeta(req, 'desktop'),
       });
 
       return res.status(200).json(result);
@@ -336,6 +379,9 @@ class GuardianAuthController {
         schoolId,
         accountId: req.params.accountId,
         actor: req.user,
+        reasonCode: req.body?.reasonCode,
+        reasonText: req.body?.reasonText,
+        requestMeta: buildRequestMeta(req, 'desktop'),
       });
 
       return res.status(200).json(result);
@@ -351,6 +397,9 @@ class GuardianAuthController {
         schoolId,
         accountId: req.params.accountId,
         actor: req.user,
+        reasonCode: req.body?.reasonCode,
+        reasonText: req.body?.reasonText,
+        requestMeta: buildRequestMeta(req, 'desktop'),
       });
 
       return res.status(200).json(result);
