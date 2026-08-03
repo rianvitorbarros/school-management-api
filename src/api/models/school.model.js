@@ -14,6 +14,14 @@ const SchoolSchema = new mongoose.Schema(
     cnpj: { type: String },
     stateRegistration: { type: String },
     municipalRegistration: { type: String },
+    inepCode: {
+      type: String,
+      trim: true,
+      validate: {
+        validator: (value) => value == null || value === '' || /^\d{8}$/.test(value),
+        message: 'Codigo INEP deve conter exatamente 8 digitos numericos.',
+      },
+    },
 
     // Diferencia a operação institucional da escola.
     educationModel: {

@@ -1,5 +1,19 @@
 const SchoolService = require('../services/school.service');
 
+function ensureSchoolScope(req, res) {
+    const authenticatedSchoolId = req.user?.school_id || req.user?.schoolId;
+
+    if (
+        authenticatedSchoolId &&
+        String(authenticatedSchoolId) !== String(req.params.id)
+    ) {
+        res.status(404).json({ message: 'Escola nao encontrada.' });
+        return false;
+    }
+
+    return true;
+}
+
 class SchoolController {
 
     async create(req, res, next) {
@@ -48,6 +62,7 @@ class SchoolController {
 
     async getById(req, res, next) {
         try {
+            if (!ensureSchoolScope(req, res)) return;
             const school = await SchoolService.getSchoolById(req.params.id);
             res.status(200).json(school);
         } catch (error) {
@@ -76,6 +91,7 @@ class SchoolController {
     // --- [UPDATE CORRIGIDO COM FLATTEN/DOT NOTATION] ---
     async update(req, res, next) {
         try {
+            if (!ensureSchoolScope(req, res)) return;
             console.log('\n\n================================================');
             console.log('🔍 [DEBUG] INÍCIO UPDATE ESCOLA');
             console.log('🆔 ID:', req.params.id);
@@ -106,7 +122,13 @@ class SchoolController {
                 const val = flatBody[key];
                 
                 // Ignora campos vazios ou nulos explícitos
-                if (val === undefined || val === null || val === '' || val === 'null' || val === 'undefined') {
+                if (
+                    val === undefined ||
+                    val === null ||
+                    val === 'null' ||
+                    val === 'undefined' ||
+                    (val === '' && key !== 'inepCode')
+                ) {
                     return;
                 }
                 
