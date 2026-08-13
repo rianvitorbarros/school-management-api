@@ -12,7 +12,25 @@ class AuthController {
             res.status(200).json(result);
 
         } catch (error) {
-            res.status(401).json({ message: error.message });
+            res.status(error.statusCode || 401).json({ message: error.message });
+        }
+    }
+
+    async refresh(req, res) {
+        try {
+            const result = await AuthService.refresh(req.body?.refreshToken);
+            return res.status(200).json(result);
+        } catch (error) {
+            return res.status(error.statusCode || 401).json({ message: error.message });
+        }
+    }
+
+    async logout(req, res) {
+        try {
+            await AuthService.logout(req.body?.refreshToken, req.user?.id);
+            return res.status(204).send();
+        } catch (_) {
+            return res.status(500).json({ message: 'Nao foi possivel encerrar a sessao.' });
         }
     }
 }

@@ -538,8 +538,51 @@ async function createOrUpdate(data, actor) {
     date: { $gte: targetStart, $lte: targetEnd },
   };
 
-  const existingAttendance = await Attendance.findOne(query);
-  const permissions = getAttendancePermissions(actor, targetStart);
+  const existingAttendance = await Attendance.findOne(query).select('+appliedOperationIds');
+  const standardPermissions = getAttendancePermissions(actor, targetStart);
+  const clientUpdatedAt = data.clientUpdatedAt ? new Date(data.clientUpdatedAt) : null;
+  const isRecentOfflineOperation = Boolean(
+    data.operationId &&
+    clientUpdatedAt &&
+    !Number.isNaN(clientUpdatedAt.getTime()) &&
+    formatDateKeyInTimeZone(clientUpdatedAt) === formatDateKey(targetStart) &&
+    Date.now() - clientUpdatedAt.getTime() <= 30 * 24 * 60 * 60 * 1000
+  );
+  const permissions = isRecentOfflineOperation
+    ? { ...standardPermissions, canCreate: true, canEdit: true, permissionReason: null }
+    : standardPermissions;
+
+  const operationId = String(data.operationId || '').trim();
+  const requestedBaseVersion = Number.isInteger(Number(data.baseVersion))
+    ? Number(data.baseVersion)
+    : null;
+  const existingVersion = Number(existingAttendance?.version) || 1;
+
+  if (operationId && existingAttendance?.appliedOperationIds?.includes(operationId)) {
+    return {
+      ...buildAttendanceResponse(await populateAttendance(existingAttendance._id)),
+      sync: { status: 'duplicate', operationId },
+    };
+  }
+
+  if (operationId && existingAttendance && requestedBaseVersion !== existingVersion) {
+    throw createAttendanceError(
+      'A chamada foi alterada no servidor depois que esta versao foi carregada.',
+      409,
+      {
+        code: 'ATTENDANCE_VERSION_CONFLICT',
+        serverVersion: existingVersion,
+        serverAttendance: buildAttendanceResponse(await populateAttendance(existingAttendance._id)),
+      }
+    );
+  }
+
+  if (operationId && !existingAttendance && requestedBaseVersion !== 0) {
+    throw createAttendanceError('A versao-base da nova chamada deve ser zero.', 409, {
+      code: 'ATTENDANCE_VERSION_CONFLICT',
+      serverVersion: 0,
+    });
+  }
 
   if (existingAttendance && !permissions.canEdit) {
     throw createHttpError(
@@ -599,38 +642,66 @@ async function createOrUpdate(data, actor) {
   };
 
   let result;
+  const nextVersion = existingAttendance ? existingVersion + 1 : 1;
+  update.version = nextVersion;
   try {
-    result = await Attendance.findOneAndUpdate(
-      query,
-      { $set: update },
-      {
-        upsert: true,
+    if (existingAttendance) {
+      const guardedQuery = operationId
+        ? {
+            _id: existingAttendance._id,
+            $or: [{ version: existingVersion }, ...(existingAttendance.version == null ? [{ version: { $exists: false } }] : [])],
+            appliedOperationIds: { $ne: operationId },
+          }
+        : { _id: existingAttendance._id };
+      const updateCommand = { $set: update };
+      if (operationId) updateCommand.$addToSet = { appliedOperationIds: operationId };
+      result = await Attendance.findOneAndUpdate(guardedQuery, updateCommand, {
         new: true,
-        setDefaultsOnInsert: true,
         runValidators: true,
+      });
+      if (!result && operationId) {
+        const latest = await Attendance.findById(existingAttendance._id).select('+appliedOperationIds');
+        if (latest?.appliedOperationIds?.includes(operationId)) {
+          return {
+            ...buildAttendanceResponse(await populateAttendance(latest._id)),
+            sync: { status: 'duplicate', operationId },
+          };
+        }
+        throw createAttendanceError('A chamada mudou durante a sincronizacao.', 409, {
+          code: 'ATTENDANCE_VERSION_CONFLICT',
+          serverVersion: latest?.version,
+          serverAttendance: latest ? buildAttendanceResponse(await populateAttendance(latest._id)) : null,
+        });
       }
-    );
+    } else {
+      result = await Attendance.create({
+        ...update,
+        ...(operationId ? { appliedOperationIds: [operationId] } : {}),
+      });
+    }
   } catch (error) {
     if (error?.code !== 11000) throw error;
-
-    result = await Attendance.findOneAndUpdate(
-      query,
-      { $set: update },
-      {
-        new: true,
-        runValidators: true,
-      }
-    );
-
-    if (!result) {
-      throw createHttpError('Ja existe uma chamada para esta turma nesta data.', 409);
+    const latest = await Attendance.findOne(query).select('+appliedOperationIds');
+    if (operationId && latest?.appliedOperationIds?.includes(operationId)) {
+      return {
+        ...buildAttendanceResponse(await populateAttendance(latest._id)),
+        sync: { status: 'duplicate', operationId },
+      };
     }
+    throw createAttendanceError('Ja existe uma versao mais recente desta chamada.', 409, {
+      code: 'ATTENDANCE_VERSION_CONFLICT',
+      serverVersion: latest?.version,
+      serverAttendance: latest ? buildAttendanceResponse(await populateAttendance(latest._id)) : null,
+    });
   }
 
   await absenceJustificationService.applyApprovedRequestCoverageToAttendance(result, actor);
   await expireOverdueAbsencesForClass(data.schoolId, data.classId);
 
-  return buildAttendanceResponse(await populateAttendance(result._id));
+  return {
+    ...buildAttendanceResponse(await populateAttendance(result._id)),
+    ...(operationId ? { sync: { status: 'applied', operationId } } : {}),
+  };
 }
 
 async function getDailyList(schoolId, classId, dateString, actor) {

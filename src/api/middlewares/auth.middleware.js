@@ -1,61 +1,63 @@
 const jwt = require('jsonwebtoken');
-const JWT_SECRET = process.env.JWT_SECRET;
+const appEmitter = require('../../loaders/eventEmitter');
+const AuthSession = require('../models/authSession.model');
+
+function readToken(req) {
+  const authHeader = req.headers.authorization;
+  return authHeader && authHeader.split(' ')[1];
+}
+
+function normalizeUser(payload) {
+  const user = { ...payload };
+  if (payload.school_id && !user.schoolId) user.schoolId = payload.school_id;
+  if (payload.role === 'student') user.studentId = payload.id;
+  return user;
+}
+
+function isWrongPrincipal(payload) {
+  return payload?.principalType === 'guardian' || payload?.tokenType === 'guardian_auth';
+}
 
 const verifyToken = (req, res, next) => {
-    // console.log('--- [AUTH MIDDLEWARE] ---'); // Pode comentar o debug se quiser
+  const token = readToken(req);
+  if (!token) return res.status(403).json({ message: 'Nenhum token fornecido!' });
 
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-
-    if (token == null) {
-        return res.status(403).json({ message: 'Nenhum token fornecido!' });
+  return jwt.verify(token, process.env.JWT_SECRET, async (error, payload) => {
+    if (error) return res.status(401).json({ message: 'Nao autorizado! Token invalido ou expirado.' });
+    if (isWrongPrincipal(payload)) {
+      return res.status(401).json({ message: 'Token nao autorizado neste fluxo.' });
     }
-
-    jwt.verify(token, JWT_SECRET, (err, decodedPayload) => {
-        if (err) {
-            return res.status(401).json({ message: 'Não autorizado! Token inválido ou expirado.' });
+    if (payload.sessionId) {
+      try {
+        const activeSession = await AuthSession.exists({
+          _id: payload.sessionId,
+          revokedAt: null,
+          expiresAt: { $gt: new Date() },
+        });
+        if (!activeSession) {
+          return res.status(401).json({ message: 'Sessao encerrada ou expirada.' });
         }
-
-        if (
-            decodedPayload?.principalType === 'guardian' ||
-            decodedPayload?.tokenType === 'guardian_auth'
-        ) {
-            return res.status(401).json({ message: 'Token nao autorizado neste fluxo.' });
-        }
-
-        // 1. Atribui o payload decodificado ao req.user
-        req.user = decodedPayload;
-
-        // ==================================================================
-        // CORREÇÃO DO ERRO DA DASHBOARD
-        // O token traz 'school_id', mas os controllers esperam 'schoolId'
-        // ==================================================================
-        if (decodedPayload.school_id && !req.user.schoolId) {
-            req.user.schoolId = decodedPayload.school_id;
-        }
-        // ==================================================================
-
-        // Helper para alunos
-        if (decodedPayload.role === 'student') {
-            req.user.studentId = decodedPayload.id;
-        }
-
-        next();
-    });
-
-    // Adiciona uma função helper direto no request
-req.emitEvent = (eventName, data) => {
-    const payload = (typeof data === 'object') ? data : { id: data };
-    
-    // Garante que o school_id exista
-    if (!payload.school_id && req.user.school_id) {
-        payload.school_id = req.user.school_id;
+      } catch (sessionError) {
+        return next(sessionError);
+      }
     }
-    
-    appEmitter.emit(eventName, payload);
-};
+    req.user = normalizeUser(payload);
+    req.emitEvent = (eventName, data) => {
+      const eventPayload = typeof data === 'object' ? data : { id: data };
+      if (!eventPayload.school_id && req.user.school_id) eventPayload.school_id = req.user.school_id;
+      appEmitter.emit(eventName, eventPayload);
+    };
+    return next();
+  });
 };
 
-module.exports = {
-    verifyToken
+const verifyTokenOptional = (req, _res, next) => {
+  const token = readToken(req);
+  if (!token) return next();
+  return jwt.verify(token, process.env.JWT_SECRET, (error, payload) => {
+    if (!error && !isWrongPrincipal(payload)) req.user = normalizeUser(payload);
+    return next();
+  });
 };
+
+module.exports = { verifyToken, verifyTokenOptional };

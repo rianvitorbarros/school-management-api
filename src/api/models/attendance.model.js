@@ -62,6 +62,16 @@ const AttendanceSchema = new Schema({
     type: [AttendanceRecordSchema],
     default: []
   },
+  version: {
+    type: Number,
+    default: 1,
+    min: 1
+  },
+  appliedOperationIds: {
+    type: [String],
+    default: [],
+    select: false
+  },
   metadata: {
     device: {
       type: String,
@@ -75,6 +85,7 @@ const AttendanceSchema = new Schema({
 }, { timestamps: true });
 
 AttendanceSchema.index({ schoolId: 1, classId: 1, date: 1 }, { unique: true });
+AttendanceSchema.index({ schoolId: 1, appliedOperationIds: 1 });
 AttendanceSchema.index({ schoolId: 1, classId: 1, 'records.studentId': 1 });
 AttendanceSchema.index({ schoolId: 1, classId: 1, 'records.absenceState': 1 });
 

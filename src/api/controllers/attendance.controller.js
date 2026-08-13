@@ -10,6 +10,8 @@ function sendAttendanceError(res, error, fallbackMessage) {
     code: error.code || null,
     message,
     ...(error.firstAttendanceDate ? { firstAttendanceDate: error.firstAttendanceDate } : {}),
+    ...(error.serverVersion != null ? { serverVersion: error.serverVersion } : {}),
+    ...(error.serverAttendance ? { serverAttendance: error.serverAttendance } : {}),
   });
 }
 
@@ -27,13 +29,13 @@ exports.saveAttendance = async (req, res) => {
 
     const result = await attendanceService.createOrUpdate(attendanceData, req.user);
 
-    appEmitter.emit('attendance_updated', {
+    if (result?.sync?.status !== 'duplicate') appEmitter.emit('attendance_updated', {
       classId: req.body.classId,
       school_id: schoolId,
       date: result?.date || req.body.date || null
     });
 
-    try {
+    if (result?.sync?.status !== 'duplicate') try {
       const managers = await User.find({
         school_id: schoolId,
         roles: { $in: ['Admin', 'Coordenador'] },

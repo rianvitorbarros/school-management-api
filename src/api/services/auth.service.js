@@ -1,84 +1,163 @@
-// src/api/services/auth.service.js
-const User = require('../models/user.model');
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
-const JWT_SECRET = process.env.JWT_SECRET; 
+const User = require('../models/user.model');
+const AuthSession = require('../models/authSession.model');
+
+const ACCESS_TOKEN_TTL = process.env.ACCESS_TOKEN_TTL || '15m';
+const REFRESH_TOKEN_TTL_DAYS = Math.max(
+  1,
+  Number.parseInt(process.env.REFRESH_TOKEN_TTL_DAYS || '30', 10) || 30
+);
+
+function hashToken(token) {
+  return crypto.createHash('sha256').update(String(token)).digest('hex');
+}
+
+function createOpaqueToken() {
+  return crypto.randomBytes(48).toString('base64url');
+}
+
+function refreshExpiry() {
+  return new Date(Date.now() + REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
+}
+
+function authError(message, statusCode = 401) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  return error;
+}
 
 class AuthService {
-    async login(identifier, password) {
-        const user = await User.findOne({
-            $or: [{ email: identifier }, { username: identifier }]
-        }).select('+password'); 
+  _buildPayload(user, sessionId) {
+    return {
+      id: user._id.toString(),
+      fullName: user.fullName,
+      roles: user.roles,
+      school_id: user.school_id.toString(),
+      tokenType: 'access',
+      sessionId: String(sessionId),
+    };
+  }
 
-        if (!user) {
-            throw new Error('Credenciais inválidas.'); 
-        }
+  _signAccessToken(user, sessionId) {
+    if (!process.env.JWT_SECRET) throw authError('Erro interno do servidor ao gerar token.', 500);
+    const token = jwt.sign(this._buildPayload(user, sessionId), process.env.JWT_SECRET, {
+      expiresIn: ACCESS_TOKEN_TTL,
+    });
+    const decoded = jwt.decode(token);
+    return { token, accessTokenExpiresAt: new Date(decoded.exp * 1000).toISOString() };
+  }
 
-        if (user.status === 'Inativo') {
-             throw new Error('Esta conta de usuário está inativa.');
-        }
+  async _createSession(user, familyId = crypto.randomUUID()) {
+    const refreshToken = createOpaqueToken();
+    const session = await AuthSession.create({
+      userId: user._id,
+      schoolId: user.school_id,
+      familyId,
+      tokenHash: hashToken(refreshToken),
+      expiresAt: refreshExpiry(),
+    });
+    return { session, refreshToken };
+  }
 
-        const isMatch = await user.comparePassword(password);
+  async _serializeUser(user) {
+    await user.populate({
+      path: 'staffProfiles',
+      populate: { path: 'enabledSubjects', model: 'Subject' },
+    });
+    const result = user.toObject();
+    delete result.password;
+    return result;
+  }
 
-        if (!isMatch) {
-            throw new Error('Credenciais inválidas.'); 
-        }
+  async login(identifier, password) {
+    const user = await User.findOne({
+      $or: [{ email: identifier }, { username: identifier }],
+    }).select('+password');
+    if (!user || !(await user.comparePassword(password))) throw authError('Credenciais inválidas.');
+    if (user.status === 'Inativo') throw authError('Esta conta de usuário está inativa.');
+    if (!user.school_id) throw authError('Esta conta não está vinculada a uma escola. Contate o suporte.');
 
-        if (!user.school_id) {
-            console.error(`[AUTH_FAILURE] Usuário ${user._id} tentou logar sem um school_id associado.`);
-            throw new Error('Esta conta de usuário não está vinculada a nenhuma escola. Contate o suporte.');
-        }
-        
-        const payload = {
-            id: user._id.toString(),
-            fullName: user.fullName,
-            roles: user.roles,
-            school_id: user.school_id.toString()
-        };
+    const { session, refreshToken } = await this._createSession(user);
+    const access = this._signAccessToken(user, session._id);
+    return {
+      user: await this._serializeUser(user),
+      token: access.token,
+      refreshToken,
+      accessTokenExpiresAt: access.accessTokenExpiresAt,
+    };
+  }
 
-        if (!JWT_SECRET) {
-            console.error("ERRO CRÍTICO: JWT_SECRET não está definida nas variáveis de ambiente.");
-            throw new Error('Erro interno do servidor ao gerar token.');
-        }
-        
-        console.log(`✅ [AUTH SERVICE] Gerando token para ${user.username}...`);
+  async refresh(refreshToken) {
+    if (!refreshToken) throw authError('Refresh token obrigatório.', 400);
+    const current = await AuthSession.findOne({ tokenHash: hashToken(refreshToken) });
+    if (!current || current.expiresAt <= new Date()) throw authError('Sessão expirada ou inválida.');
 
-        const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '1d' });
-
-        // Popula os perfis E, dentro deles, popula as disciplinas (enabledSubjects)
-await user.populate({
-    path: 'staffProfiles',
-    populate: { 
-        path: 'enabledSubjects',
-        model: 'Subject' // Garante que busca na collection correta
+    if (current.revokedAt) {
+      if (current.replacedByTokenHash) {
+        await AuthSession.updateMany(
+          { familyId: current.familyId, revokedAt: null },
+          { $set: { revokedAt: new Date(), revokeReason: 'refresh_token_reuse' } }
+        );
+      }
+      throw authError('Sessão revogada.');
     }
-});
 
-        const userObject = user.toObject();
-        delete userObject.password; 
-
-        // =================================================================
-        // [DEBUG] IDENTIFICAR TIPO DO ADDRESS
-        // =================================================================
-        console.log('--- [DEBUG BACKEND] DADOS DE RETORNO ---');
-        console.log(`User ID: ${userObject._id}`);
-        
-        // Verifica o Address
-        if (userObject.address) {
-            console.log('Address TYPE:', typeof userObject.address);
-            console.log('Address VALUE:', userObject.address);
-        } else {
-            console.log('Address: NULL ou UNDEFINED');
-        }
-
-        // Verifica o HealthInfo (se existir no seu user model)
-        if (userObject.healthInfo) {
-             console.log('HealthInfo TYPE:', typeof userObject.healthInfo);
-        }
-        console.log('----------------------------------------');
-        // =================================================================
-
-        return { user: userObject, token };
+    const user = await User.findOne({
+      _id: current.userId,
+      school_id: current.schoolId,
+      status: 'Ativo',
+    });
+    if (!user) {
+      await AuthSession.updateMany(
+        { familyId: current.familyId, revokedAt: null },
+        { $set: { revokedAt: new Date(), revokeReason: 'user_unavailable' } }
+      );
+      throw authError('Usuário indisponível.');
     }
+
+    const nextRefreshToken = createOpaqueToken();
+    const nextHash = hashToken(nextRefreshToken);
+    const rotated = await AuthSession.findOneAndUpdate(
+      { _id: current._id, revokedAt: null },
+      { $set: {
+        revokedAt: new Date(),
+        revokeReason: 'rotated',
+        replacedByTokenHash: nextHash,
+        lastUsedAt: new Date(),
+      } },
+      { new: true }
+    );
+    if (!rotated) throw authError('Sessão já renovada.');
+
+    const nextSession = await AuthSession.create({
+      userId: current.userId,
+      schoolId: current.schoolId,
+      familyId: current.familyId,
+      tokenHash: nextHash,
+      expiresAt: refreshExpiry(),
+    });
+    const access = this._signAccessToken(user, nextSession._id);
+    return {
+      token: access.token,
+      refreshToken: nextRefreshToken,
+      accessTokenExpiresAt: access.accessTokenExpiresAt,
+    };
+  }
+
+  async logout(refreshToken, userId = null) {
+    let familyId = null;
+    if (refreshToken) {
+      const session = await AuthSession.findOne({ tokenHash: hashToken(refreshToken) });
+      familyId = session?.familyId || null;
+    }
+    const query = familyId ? { familyId, revokedAt: null } : { userId, revokedAt: null };
+    if (familyId || userId) {
+      await AuthSession.updateMany(query, {
+        $set: { revokedAt: new Date(), revokeReason: 'logout' },
+      });
+    }
+  }
 }
 
 module.exports = new AuthService();
