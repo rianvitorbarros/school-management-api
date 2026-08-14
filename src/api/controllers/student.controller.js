@@ -1,5 +1,6 @@
 // src/api/controllers/student.controller.js
 const StudentService = require('../services/student.service');
+const AcademicHistoryService = require('../services/academicHistory.service');
 const User = require('../models/user.model');
 const appEmitter = require('../../loaders/eventEmitter'); 
 
@@ -252,9 +253,10 @@ class StudentController {
                 return res.status(400).json({ message: 'Campos obrigatórios (gradeLevel, schoolYear, finalResult) não fornecidos.' });
             }
 
-            // [AUDITORIA] Passamos req.user
-            const updatedStudent = await StudentService.addHistoryRecord(studentId, recordData, schoolId, req.user);
-            res.status(201).json(updatedStudent.academicHistory); 
+            const history = await AcademicHistoryService.createRecord({
+                schoolId, studentId, recordData, actor: req.user
+            });
+            res.status(201).json(history);
 
         } catch (error) {
             if (error.message.includes('não autenticado')) return res.status(403).json({ message: error.message });
@@ -269,9 +271,10 @@ class StudentController {
             const { studentId, recordId } = req.params;
             const updatedData = req.body;
 
-            // [AUDITORIA] Passamos req.user
-            const updatedStudent = await StudentService.updateHistoryRecord(studentId, recordId, updatedData, schoolId, req.user);
-            res.status(200).json(updatedStudent.academicHistory);
+            const history = await AcademicHistoryService.updateRecord({
+                schoolId, studentId, recordId, recordData: updatedData, actor: req.user
+            });
+            res.status(200).json(history);
 
         } catch (error) {
             if (error.message.includes('não autenticado')) return res.status(403).json({ message: error.message });
@@ -285,13 +288,60 @@ class StudentController {
             const schoolId = getSchoolId(req);
             const { studentId, recordId } = req.params;
 
-            // [AUDITORIA] Passamos req.user
-            const updatedStudent = await StudentService.deleteHistoryRecord(studentId, recordId, schoolId, req.user);
-            res.status(200).json(updatedStudent.academicHistory);
+            const history = await AcademicHistoryService.deleteRecord({
+                schoolId, studentId, recordId, actor: req.user
+            });
+            res.status(200).json(history);
 
         } catch (error) {
              if (error.message.includes('não autenticado')) return res.status(403).json({ message: error.message });
              if (error.message.includes('não encontrado')) return res.status(404).json({ message: error.message });
+            next(error);
+        }
+    }
+
+    async getAcademicHistoryContext(req, res, next) {
+        try {
+            const schoolId = getSchoolId(req);
+            const context = await AcademicHistoryService.getContext({
+                schoolId,
+                studentId: req.params.studentId,
+                schoolYear: req.query.schoolYear,
+                enrollmentId: req.query.enrollmentId,
+            });
+            res.status(200).json(context);
+        } catch (error) {
+            next(error);
+        }
+    }
+
+    async previewAcademicHistoryImport(req, res, next) {
+        try {
+            const schoolId = getSchoolId(req);
+            const preview = await AcademicHistoryService.previewImport({
+                schoolId,
+                studentId: req.params.studentId,
+                schoolYear: req.body.schoolYear,
+                enrollmentId: req.body.enrollmentId,
+            });
+            res.status(200).json(preview);
+        } catch (error) {
+            next(error);
+        }
+    }
+
+    async importAcademicHistory(req, res, next) {
+        try {
+            const schoolId = getSchoolId(req);
+            const history = await AcademicHistoryService.createRecord({
+                schoolId,
+                studentId: req.params.studentId,
+                recordData: req.body,
+                actor: req.user,
+                imported: true,
+            });
+            res.status(201).json(history);
+        } catch (error) {
             next(error);
         }
     }

@@ -31,6 +31,9 @@ router.put('/:id', authMiddleware.verifyToken, upload.single('photo'), studentCo
 router.delete('/:id', authMiddleware.verifyToken, studentController.delete);
 
 // --- Rotas de Histórico ---
+router.get('/:studentId/history/context', authMiddleware.verifyToken, studentController.getAcademicHistoryContext);
+router.post('/:studentId/history/import-preview', authMiddleware.verifyToken, studentController.previewAcademicHistoryImport);
+router.post('/:studentId/history/import', authMiddleware.verifyToken, studentController.importAcademicHistory);
 router.post('/:studentId/history', authMiddleware.verifyToken, studentController.addAcademicRecord);
 router.put('/:studentId/history/:recordId', authMiddleware.verifyToken, studentController.updateAcademicRecord);
 router.delete('/:studentId/history/:recordId', authMiddleware.verifyToken, studentController.deleteAcademicRecord);

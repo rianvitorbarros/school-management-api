@@ -77,20 +77,51 @@ const authorizedPickupSchema = new Schema({
 }, { _id: false });
 
 const gradeSchema = new Schema({
+    subjectId: { type: Schema.Types.ObjectId, ref: 'Subject', default: null },
     subjectName: { type: String, required: true, trim: true },
-    gradeValue: { type: String, required: true, trim: true }
+    gradeValue: { type: String, trim: true, default: '' },
+    historicalName: { type: String, trim: true, default: '' },
+    curriculumCategory: { type: String, trim: true, default: '' },
+    finalGrade: { type: Number, min: 0, max: 10, default: null },
+    concept: { type: String, trim: true, default: '' },
+    specialStatus: {
+        type: String,
+        enum: ['', 'not_taken', 'not_offered', 'exempt', 'transferred'],
+        default: ''
+    },
+    workloadHours: { type: Number, min: 0, default: null },
+    origin: {
+        type: String,
+        enum: ['legacy', 'manual', 'system_import'],
+        default: 'legacy'
+    }
 }, { _id: false });
 
 const academicRecordSchema = new Schema({
     gradeLevel: { type: String, required: true, trim: true },
     schoolYear: { type: Number, required: true },
     schoolName: { type: String, required: true, trim: true, default: 'Escola Sossego da Mamãe' },
+    inepCode: { type: String, trim: true, default: '' },
     city: { type: String, required: true, trim: true, default: 'Parauapebas' },
     state: { type: String, required: true, trim: true, default: 'PA' },
+    enrollmentId: { type: Schema.Types.ObjectId, ref: 'Enrollment', default: null },
+    classId: { type: Schema.Types.ObjectId, ref: 'Class', default: null },
     grades: { type: [gradeSchema], default: [] },
     annualWorkload: { type: String, trim: true },
-    finalResult: { type: String, required: true, trim: true }
-});
+    annualFrequency: { type: Number, min: 0, max: 100, default: null },
+    schoolDays: { type: Number, min: 0, default: null },
+    finalResult: { type: String, required: true, trim: true },
+    observations: { type: String, trim: true, default: '' },
+    approvalCriterion: { type: String, trim: true, default: '' },
+    origin: {
+        type: String,
+        enum: ['legacy', 'manual', 'system_import'],
+        default: 'legacy'
+    },
+    gradingFormulaSnapshot: { type: Schema.Types.Mixed, default: null },
+    createdByUserId: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    updatedByUserId: { type: Schema.Types.ObjectId, ref: 'User', default: null }
+}, { timestamps: true });
 
 // --- SCHEMA PRINCIPAL ---
 
