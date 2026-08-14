@@ -20,7 +20,7 @@ const defaultPopulation = [
     },
     {
         path: 'classId',
-        select: 'name grade schoolYear' 
+        select: 'name grade schoolYear shift level room status school_id'
     },
     {
         path: 'termId', // [NOVO] Popula o Período
@@ -166,13 +166,9 @@ class HorarioService {
             .populate(defaultPopulation)
             .sort({ dayOfWeek: 1, startTime: 1 });
 
-        if (ownHorarios.length > 0) {
-            return this._decorateOwnSchedules(ownHorarios, targetTerm);
-        }
-
         const mode = await this._getRegularWeeklyScheduleMode(schoolId);
         if (mode !== SCHEDULE_MODES.SHARED_ACROSS_PERIODS) {
-            return [];
+            return this._decorateOwnSchedules(ownHorarios, targetTerm);
         }
 
         const sourceQuery = { ...query };
@@ -185,10 +181,31 @@ class HorarioService {
         });
 
         if (!sourceTerm || horarios.length === 0) {
-            return [];
+            return this._decorateOwnSchedules(ownHorarios, targetTerm);
         }
 
-        return this._decorateInheritedSchedules(horarios, sourceTerm, targetTerm);
+        const classesWithOwnSchedule = new Set(
+            ownHorarios
+                .map((horario) => normalizeId(horario.classId))
+                .filter(Boolean),
+        );
+        const inheritedWithoutOverrides = horarios.filter((horario) => {
+            const classId = normalizeId(horario.classId);
+            return classId && !classesWithOwnSchedule.has(classId);
+        });
+
+        return [
+            ...this._decorateOwnSchedules(ownHorarios, targetTerm),
+            ...this._decorateInheritedSchedules(
+                inheritedWithoutOverrides,
+                sourceTerm,
+                targetTerm,
+            ),
+        ].sort((left, right) => {
+            const dayDifference = Number(left.dayOfWeek) - Number(right.dayOfWeek);
+            if (dayDifference !== 0) return dayDifference;
+            return String(left.startTime).localeCompare(String(right.startTime));
+        });
     }
 
     async _validateCopyContext({ sourceTermId, targetTermId, classId, schoolId }) {
