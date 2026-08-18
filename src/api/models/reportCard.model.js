@@ -1,6 +1,51 @@
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
+const reportCardScoreHistorySchema = new Schema(
+  {
+    actorId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    actorNameSnapshot: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    actorRole: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    source: {
+      type: String,
+      enum: ['manual_report_card_edit', 'exam_result_import'],
+      required: true,
+    },
+    reason: {
+      type: String,
+      trim: true,
+      maxlength: 1000,
+      default: '',
+    },
+    changedAt: {
+      type: Date,
+      required: true,
+      default: Date.now,
+    },
+    previous: {
+      type: Schema.Types.Mixed,
+      default: null,
+    },
+    current: {
+      type: Schema.Types.Mixed,
+      required: true,
+    },
+  },
+  { _id: true }
+);
+
 const reportCardSubjectSchema = new Schema(
   {
     subjectId: {
@@ -153,6 +198,10 @@ const reportCardSubjectSchema = new Schema(
       type: String,
       trim: true,
       default: '',
+    },
+    scoreHistory: {
+      type: [reportCardScoreHistorySchema],
+      default: [],
     },
   },
   { _id: false }

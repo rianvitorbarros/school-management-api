@@ -38,6 +38,21 @@ function readName(value, fallback = '') {
   );
 }
 
+function actorSummary(value, fallbackName = '') {
+  if (!value) return { id: '', name: fallbackName, role: '' };
+  if (typeof value === 'string') {
+    return { id: value, name: fallbackName, role: '' };
+  }
+  const roles = Array.isArray(value.roles)
+    ? value.roles.map(String)
+    : [value.role || value.type || value.perfil].filter(Boolean).map(String);
+  return {
+    id: extractId(value),
+    name: readName(value, fallbackName),
+    role: roles.join(', '),
+  };
+}
+
 function parseDateValue(value) {
   if (!value) return null;
   const date = new Date(value);
@@ -122,6 +137,10 @@ class ReportCardHistoryService {
     })
       .populate('termId', 'titulo dataInicio dataFim anoLetivoId')
       .populate('classId', 'name grade schoolYear')
+      .populate('subjects.teacherId', 'name fullName full_name roles role type perfil')
+      .populate('subjects.filledBy', 'name fullName full_name roles role type perfil')
+      .populate('subjects.lastEditedBy', 'name fullName full_name roles role type perfil')
+      .populate('subjects.scoreHistory.actorId', 'name fullName full_name roles role type perfil')
       .sort({ createdAt: 1 });
   }
 
@@ -221,6 +240,7 @@ class ReportCardHistoryService {
             subjectName: this._buildSubjectName(subject),
             scoresByTerm: {},
             statusesByTerm: {},
+            contextsByTerm: {},
             _minimumAverage:
               Number(reportCard.minimumAverage) > 0
                 ? Number(reportCard.minimumAverage)
@@ -233,6 +253,50 @@ class ReportCardHistoryService {
         entry.scoresByTerm[termId] = score;
         entry.statusesByTerm[termId] =
           String(subject.status || '').trim() || (score === null ? 'Pendente' : 'Preenchido');
+        const teacher = actorSummary(
+          subject.teacherId,
+          subject.teacherNameSnapshot || ''
+        );
+        const lastEditor = actorSummary(subject.lastEditedBy);
+        const filledBy = actorSummary(subject.filledBy);
+        entry.contextsByTerm[termId] = {
+          reportCardId: extractId(reportCard),
+          classId: extractId(reportCard.classId),
+          score,
+          testScore: this._scoreValue(subject.testScore),
+          activityScore: this._scoreValue(subject.activityScore),
+          participationScore: this._scoreValue(subject.participationScore),
+          teacherId: teacher.id,
+          teacherName: teacher.name,
+          filledBy,
+          filledAt: subject.filledAt || null,
+          lastEditedBy: lastEditor,
+          lastEditedAt: subject.lastEditedAt || null,
+          lastEditedRole: subject.lastEditedRole || lastEditor.role || '',
+          lastEditedSource: subject.lastEditedSource || '',
+          observation: subject.observation || '',
+          history: (subject.scoreHistory || [])
+            .map((event) => {
+              const actor = actorSummary(
+                event.actorId,
+                event.actorNameSnapshot || ''
+              );
+              return {
+                id: extractId(event),
+                actor,
+                actorRole: event.actorRole || actor.role || '',
+                source: event.source || '',
+                reason: event.reason || '',
+                changedAt: event.changedAt || null,
+                previous: event.previous || null,
+                current: event.current || null,
+              };
+            })
+            .sort(
+              (left, right) =>
+                new Date(right.changedAt || 0) - new Date(left.changedAt || 0)
+            ),
+        };
       }
     }
 
@@ -268,6 +332,7 @@ class ReportCardHistoryService {
           subjectName: subject.subjectName,
           scoresByTerm: subject.scoresByTerm,
           statusesByTerm: subject.statusesByTerm,
+          contextsByTerm: subject.contextsByTerm,
           filledTermsCount: filledScores.length,
           finalAverage,
           situation,

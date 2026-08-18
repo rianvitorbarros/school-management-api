@@ -89,6 +89,16 @@ function dedupeGrades(grades = []) {
       subjectName,
       historicalName: subjectName,
       gradeValue: String(raw.gradeValue ?? raw.concept ?? raw.finalGrade ?? '').trim(),
+      bimonthlyGrades: Array.isArray(raw.bimonthlyGrades)
+        ? raw.bimonthlyGrades.slice(0, 4).map((value) => {
+            if (value === null || value === undefined || value === '') return null;
+            const numeric = Number(value);
+            if (!Number.isFinite(numeric) || numeric < 0 || numeric > 10) {
+              throw httpError('As notas bimestrais devem estar entre 0 e 10.', 400);
+            }
+            return numeric;
+          })
+        : [],
     };
     const key = gradeKey(next);
     if (!map.has(key)) map.set(key, next);
@@ -356,11 +366,21 @@ class AcademicHistoryService {
     }
     const state = String(recordData.state || '').trim().toUpperCase();
     if (!/^[A-Z]{2}$/.test(state)) throw httpError('UF invalida.', 400);
+    const institutionType = String(recordData.institutionType || 'legacy');
+    if (!['legacy', 'current_school', 'external_school'].includes(institutionType)) {
+      throw httpError('Origem da instituicao invalida.', 400);
+    }
+    const gradeEntryMode = String(recordData.gradeEntryMode || 'final_only');
+    if (!['final_only', 'bimonthly'].includes(gradeEntryMode)) {
+      throw httpError('Forma de lancamento das notas invalida.', 400);
+    }
     return {
       ...recordData,
       schoolYear,
       state,
       grades: dedupeGrades(recordData.grades),
+      institutionType,
+      gradeEntryMode,
       origin: imported ? 'system_import' : recordData.origin || 'manual',
       updatedByUserId: actorId(actor),
     };

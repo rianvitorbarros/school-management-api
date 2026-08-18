@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const Student = require('../../api/models/student.model');
 const {
+  AcademicHistoryService,
   FINAL_RESULTS,
   _private,
 } = require('../../api/services/academicHistory.service');
@@ -80,6 +81,59 @@ test('schema aceita registro anual legado sem novos campos', () => {
   assert.equal(error, undefined);
   assert.equal(document.academicHistory[0].origin, 'legacy');
   assert.equal(document.academicHistory[0].grades[0].origin, 'legacy');
+  assert.equal(document.academicHistory[0].institutionType, 'legacy');
+  assert.equal(document.academicHistory[0].gradeEntryMode, 'final_only');
+});
+
+test('schema suporta escola externa e notas bimestrais opcionais', () => {
+  const document = new Student({
+    fullName: 'Aluno Bimestral',
+    birthDate: new Date('2015-01-01'),
+    gender: 'Outro',
+    race: 'Parda',
+    nationality: 'Brasileira',
+    address: { street: 'Rua A', neighborhood: 'Centro', number: '1', cep: '00000000', city: 'Cidade', state: 'PA' },
+    financialResp: 'STUDENT',
+    cpf: '00000000001',
+    school_id: '64b7f193c54d7f0012345678',
+    academicHistory: [{
+      gradeLevel: '2º Ano',
+      schoolYear: 2025,
+      schoolName: 'Escola Externa',
+      city: 'Marabá',
+      state: 'PA',
+      finalResult: 'Aprovado',
+      institutionType: 'external_school',
+      gradeEntryMode: 'bimonthly',
+      grades: [{
+        subjectName: 'Português',
+        gradeValue: '8.5',
+        finalGrade: 8.5,
+        bimonthlyGrades: [8, 9, null, null],
+      }],
+    }],
+  });
+  const error = document.validateSync();
+  assert.equal(error, undefined);
+  assert.deepEqual(document.academicHistory[0].grades[0].bimonthlyGrades, [8, 9, null, null]);
+});
+
+test('servico rejeita nota bimestral fora do intervalo permitido', () => {
+  const service = new AcademicHistoryService();
+  assert.throws(
+    () => service._sanitizeRecord({
+      gradeLevel: '2º Ano',
+      schoolYear: 2025,
+      schoolName: 'Escola Externa',
+      city: 'Marabá',
+      state: 'PA',
+      finalResult: 'Aprovado',
+      institutionType: 'external_school',
+      gradeEntryMode: 'bimonthly',
+      grades: [{ subjectName: 'Matemática', bimonthlyGrades: [11] }],
+    }, { id: '64b7f193c54d7f0012345679' }),
+    /entre 0 e 10/
+  );
 });
 
 test('schema suporta nota numerica, conceito e situacao especial', () => {

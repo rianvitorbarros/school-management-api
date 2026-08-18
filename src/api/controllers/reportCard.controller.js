@@ -143,6 +143,7 @@ class ReportCardController {
         activityScore,
         participationScore,
         observation,
+        reason,
         expectedTermId,
         expectedSchoolYear,
         expectedClassId,
@@ -160,6 +161,7 @@ class ReportCardController {
         activityScore,
         participationScore,
         observation,
+        reason,
         expectedContext: {
           expectedTermId,
           expectedSchoolYear,

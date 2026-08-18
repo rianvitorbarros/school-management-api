@@ -90,6 +90,10 @@ const gradeSchema = new Schema({
         default: ''
     },
     workloadHours: { type: Number, min: 0, default: null },
+    bimonthlyGrades: {
+        type: [{ type: Number, min: 0, max: 10, default: null }],
+        default: []
+    },
     origin: {
         type: String,
         enum: ['legacy', 'manual', 'system_import'],
@@ -113,6 +117,16 @@ const academicRecordSchema = new Schema({
     finalResult: { type: String, required: true, trim: true },
     observations: { type: String, trim: true, default: '' },
     approvalCriterion: { type: String, trim: true, default: '' },
+    institutionType: {
+        type: String,
+        enum: ['legacy', 'current_school', 'external_school'],
+        default: 'legacy'
+    },
+    gradeEntryMode: {
+        type: String,
+        enum: ['final_only', 'bimonthly'],
+        default: 'final_only'
+    },
     origin: {
         type: String,
         enum: ['legacy', 'manual', 'system_import'],

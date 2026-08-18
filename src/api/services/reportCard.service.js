@@ -340,6 +340,41 @@ class ReportCardService {
     target.lastEditedSource = 'manual_report_card_edit';
   }
 
+  _scoreSnapshot(subjectEntry) {
+    return {
+      score: subjectEntry?.score ?? null,
+      testScore: subjectEntry?.testScore ?? null,
+      activityScore: subjectEntry?.activityScore ?? null,
+      participationScore: subjectEntry?.participationScore ?? null,
+      observation: subjectEntry?.observation || '',
+    };
+  }
+
+  _appendScoreHistory({
+    subjectEntry,
+    actor,
+    source,
+    reason = '',
+    previous,
+    current,
+    changedAt = new Date(),
+  }) {
+    if (!Array.isArray(subjectEntry.scoreHistory)) {
+      subjectEntry.scoreHistory = [];
+    }
+    subjectEntry.scoreHistory.push({
+      actorId: getActorId(actor),
+      actorNameSnapshot:
+        actor?.fullName || actor?.name || actor?.full_name || actor?.email || '',
+      actorRole: getPrimaryReportCardEditRole(actor),
+      source,
+      reason: String(reason || '').trim(),
+      changedAt,
+      previous,
+      current,
+    });
+  }
+
   _mergeSubjects(existingSubjects = [], generatedSubjects = [], minimumAverage = 7) {
     const existingMap = new Map();
 
@@ -376,6 +411,11 @@ class ReportCardService {
         observation: existing.observation || '',
         filledBy: existing.filledBy || null,
         filledAt: existing.filledAt || null,
+        lastEditedBy: existing.lastEditedBy || null,
+        lastEditedAt: existing.lastEditedAt || null,
+        lastEditedRole: existing.lastEditedRole || '',
+        lastEditedSource: existing.lastEditedSource || '',
+        scoreHistory: existing.scoreHistory || [],
       };
     });
   }
@@ -790,6 +830,7 @@ class ReportCardService {
     activityScore,
     participationScore,
     observation,
+    reason,
     expectedContext = {},
   }) {
     if (!schoolId || !reportCardId || !subjectId || !getActorId(actor)) {
@@ -869,12 +910,37 @@ class ReportCardService {
     const subjectEntry = reportCard.subjects[subjectIndex];
     this._assertCanEditSubject({ actor, reportCard, subjectEntry });
 
-    reportCard.subjects[subjectIndex].testScore = tScore;
-    reportCard.subjects[subjectIndex].activityScore = aScore;
-    reportCard.subjects[subjectIndex].participationScore = pScore;
+    const previousSnapshot = this._scoreSnapshot(subjectEntry);
+    const isOverwrite =
+      previousSnapshot.score !== null &&
+      Number(previousSnapshot.score) !== Number(finalScore);
+    const normalizedReason = String(reason || observation || '').trim();
+    const editingComponents =
+      testScore !== undefined ||
+      activityScore !== undefined ||
+      participationScore !== undefined;
+    if (isOverwrite && !editingComponents && !normalizedReason) {
+      throw this._createError(
+        'Informe o motivo da alteração para substituir uma nota existente.',
+        400
+      );
+    }
+
+    if (editingComponents) {
+      reportCard.subjects[subjectIndex].testScore = tScore;
+      reportCard.subjects[subjectIndex].activityScore = aScore;
+      reportCard.subjects[subjectIndex].participationScore = pScore;
+    }
     reportCard.subjects[subjectIndex].score = finalScore;
-    reportCard.subjects[subjectIndex].observation = observation || '';
-    this._applyManualEditMetadata(reportCard.subjects[subjectIndex], actor);
+    if (observation !== undefined) {
+      reportCard.subjects[subjectIndex].observation = observation || '';
+    }
+    const changedAt = new Date();
+    this._applyManualEditMetadata(
+      reportCard.subjects[subjectIndex],
+      actor,
+      changedAt
+    );
     
     reportCard.subjects[subjectIndex].status = this._calculateSubjectStatus(
       finalScore,
@@ -884,6 +950,16 @@ class ReportCardService {
     reportCard.evaluationMode = 'numeric';
     reportCard.gradingType = 'numeric';
     reportCard.status = this._calculateReportCardStatus(reportCard);
+
+    this._appendScoreHistory({
+      subjectEntry: reportCard.subjects[subjectIndex],
+      actor,
+      source: 'manual_report_card_edit',
+      reason: normalizedReason,
+      previous: previousSnapshot,
+      current: this._scoreSnapshot(reportCard.subjects[subjectIndex]),
+      changedAt,
+    });
 
     await reportCard.save();
 

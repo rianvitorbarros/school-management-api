@@ -38,6 +38,7 @@ function makeReportCard({
         score: null,
         status: 'Pendente',
         observation: '',
+        scoreHistory: [],
       },
     ],
     async save() {
@@ -61,6 +62,7 @@ async function withMockedReportCardFindOne(reportCard, action) {
 function actor({ id = makeId(), schoolId, roles }) {
   return {
     _id: id,
+    fullName: 'Usuário de Teste',
     school_id: schoolId,
     roles,
   };
@@ -103,7 +105,81 @@ test('professor vinculado edita somente sua disciplina', async () => {
   assert.equal(result.subjects[0].score, 9);
   assert.equal(String(result.subjects[0].filledBy), teacherId);
   assert.equal(result.subjects[0].lastEditedRole, 'Professor');
+  assert.equal(result.subjects[0].scoreHistory.length, 1);
+  assert.equal(result.subjects[0].scoreHistory[0].source, 'manual_report_card_edit');
+  assert.equal(result.subjects[0].scoreHistory[0].actorNameSnapshot, 'Usuário de Teste');
   assert.equal(result.saved, true);
+});
+
+test('edicao direta preserva componentes de prova e exige motivo na sobrescrita', async () => {
+  const schoolId = makeId();
+  const teacherId = makeId();
+  const reportCard = makeReportCard({ schoolId, teacherId });
+  reportCard.subjects[0].testScore = 5;
+  reportCard.subjects[0].activityScore = 2;
+  reportCard.subjects[0].participationScore = 1;
+  reportCard.subjects[0].score = 8;
+  reportCard.subjects[0].observation = 'Registro original do professor.';
+
+  await assert.rejects(
+    () =>
+      withMockedReportCardFindOne(reportCard, () =>
+        reportCardService.updateTeacherSubjectScore({
+          schoolId,
+          reportCardId: reportCard._id,
+          subjectId: reportCard.subjects[0].subjectId,
+          actor: actor({ id: teacherId, schoolId, roles: ['Professor'] }),
+          score: 9,
+        })
+      ),
+    /motivo/
+  );
+
+  const result = await withMockedReportCardFindOne(reportCard, () =>
+    reportCardService.updateTeacherSubjectScore({
+      schoolId,
+      reportCardId: reportCard._id,
+      subjectId: reportCard.subjects[0].subjectId,
+      actor: actor({ id: teacherId, schoolId, roles: ['Professor'] }),
+      score: 9,
+      reason: 'Correção conferida pela coordenação.',
+    })
+  );
+
+  assert.equal(result.subjects[0].score, 9);
+  assert.equal(result.subjects[0].testScore, 5);
+  assert.equal(result.subjects[0].activityScore, 2);
+  assert.equal(result.subjects[0].participationScore, 1);
+  assert.equal(result.subjects[0].observation, 'Registro original do professor.');
+  assert.equal(result.subjects[0].scoreHistory.length, 1);
+  assert.equal(result.subjects[0].scoreHistory[0].previous.score, 8);
+  assert.equal(result.subjects[0].scoreHistory[0].current.score, 9);
+});
+
+test('professor continua podendo recalcular componentes com autoria automatica', async () => {
+  const schoolId = makeId();
+  const teacherId = makeId();
+  const reportCard = makeReportCard({ schoolId, teacherId });
+  reportCard.subjects[0].testScore = 4;
+  reportCard.subjects[0].activityScore = 2;
+  reportCard.subjects[0].participationScore = 1;
+  reportCard.subjects[0].score = 7;
+
+  const result = await withMockedReportCardFindOne(reportCard, () =>
+    reportCardService.updateTeacherSubjectScore({
+      schoolId,
+      reportCardId: reportCard._id,
+      subjectId: reportCard.subjects[0].subjectId,
+      actor: actor({ id: teacherId, schoolId, roles: ['Professor'] }),
+      testScore: 5,
+      activityScore: 2,
+      participationScore: 1,
+    })
+  );
+
+  assert.equal(result.subjects[0].score, 8);
+  assert.equal(result.subjects[0].scoreHistory.length, 1);
+  assert.equal(result.subjects[0].scoreHistory[0].actorRole, 'Professor');
 });
 
 test('professor nao vinculado nao edita disciplina de outro professor', async () => {

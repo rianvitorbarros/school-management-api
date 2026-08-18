@@ -12,6 +12,9 @@ const Subject = require('../models/subject.model');
 const AuditLog = require('../models/auditLog.model');
 const reportCardService = require('./reportCard.service');
 const examService = require('./exam.service');
+const {
+  getPrimaryReportCardEditRole,
+} = require('./reportCardPermission.service');
 const appEmitter = require('../../loaders/eventEmitter');
 const {
   ensureClassAccess,
@@ -1701,7 +1704,12 @@ class ReportCardExamImportService {
         reportCard.minimumAverage
       );
       subjectEntry.filledBy = actorId;
-      subjectEntry.filledAt = new Date();
+      const changedAt = new Date();
+      subjectEntry.filledAt = changedAt;
+      subjectEntry.lastEditedBy = actorId;
+      subjectEntry.lastEditedAt = changedAt;
+      subjectEntry.lastEditedRole = getPrimaryReportCardEditRole(actor);
+      subjectEntry.lastEditedSource = 'exam_result_import';
       subjectEntry.testScoreSource = {
         type: 'exam_result_import',
         examId,
@@ -1709,11 +1717,28 @@ class ReportCardExamImportService {
         sheetId: item.sheetId,
         importBatchId: batch._id,
         importedBy: actorId,
-        importedAt: new Date(),
+        importedAt: changedAt,
         originalGrade: item.examGrade,
         originalMaxGrade: item.examMaxGrade,
         scoreMode: normalizedScoreMode,
       };
+      reportCardService._appendScoreHistory({
+        subjectEntry,
+        actor,
+        source: 'exam_result_import',
+        reason: this._normalizeReason(
+          decisionMap.get(String(item.studentId))?.reason || normalizedReason
+        ),
+        previous: {
+          score: previousSnapshot.score,
+          testScore: previousSnapshot.testScore,
+          activityScore: finiteNumber(subjectEntry.activityScore),
+          participationScore: finiteNumber(subjectEntry.participationScore),
+          observation: subjectEntry.observation || '',
+        },
+        current: reportCardService._scoreSnapshot(subjectEntry),
+        changedAt,
+      });
 
       reportCard.status = reportCardService._calculateReportCardStatus(reportCard.subjects);
       await reportCard.save();
