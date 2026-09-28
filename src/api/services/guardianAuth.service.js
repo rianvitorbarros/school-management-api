@@ -335,7 +335,7 @@ class GuardianAuthService {
   }
 
   _assertValidPin(pin) {
-    if (!/^\d{6}$/.test(String(pin || '')) && !/^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/.test(String(pin || ''))) {
+    if (!/^\d{6}$/.test(String(pin || ''))) {
       throw this._createHttpError(
         'O PIN deve conter exatamente 6 digitos numericos.',
         400
@@ -356,10 +356,7 @@ class GuardianAuthService {
   }
 
   _generateTemporaryCredential() {
-    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    const bytes = this.crypto.randomBytes(8);
-    const value = [...bytes].map((item) => alphabet[item % alphabet.length]).join('');
-    return `${value.slice(0, 4)}-${value.slice(4)}`;
+    return String(this.crypto.randomInt(0, 1000000)).padStart(6, '0');
   }
 
   _assertGuardianJwtSecret() {
