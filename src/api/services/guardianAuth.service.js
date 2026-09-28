@@ -350,7 +350,9 @@ class GuardianAuthService {
     if (!temporary?.passwordHash || !temporary.credentialId || temporary.usedAt || temporary.revokedAt || !temporary.expiresAt || new Date(temporary.expiresAt) <= now) return { valid: false };
     if (!await this.bcrypt.compare(String(credential), temporary.passwordHash)) return { valid: false };
     const consumed = await this.GuardianAccessAccountModel.findOneAndUpdate({ _id: account._id, 'temporaryAccess.credentialId': temporary.credentialId, 'temporaryAccess.usedAt': null, 'temporaryAccess.revokedAt': null, 'temporaryAccess.expiresAt': { $gt: now } }, { $set: { 'temporaryAccess.usedAt': now } }, { new: true });
-    return consumed ? { valid: true, type: 'TEMPORARY_ACCESS' } : { valid: false };
+    if (!consumed) return { valid: false };
+    await this._registerEvent({ schoolId: account.school_id, accountId: account._id, tutorId: account.tutorId, actorType: 'public', eventType: GUARDIAN_ACCESS_EVENT_TYPES.TEMPORARY_ACCESS_USED, metadata: { authenticationMethod: 'TEMPORARY_ACCESS' } });
+    return { valid: true, type: 'TEMPORARY_ACCESS' };
   }
 
   _generateTemporaryCredential() {
@@ -2061,6 +2063,8 @@ class GuardianAuthService {
   }
 
   _buildAccountSummary(account, tutor = null, relationship = 'Responsavel') {
+    const temporary = account.temporaryAccess;
+    const temporaryActive = Boolean(temporary?.expiresAt && !temporary.usedAt && !temporary.revokedAt && new Date(temporary.expiresAt) > this._getNow());
     return {
       accountId: String(account._id),
       tutorId: String(account.tutorId),
@@ -2075,6 +2079,7 @@ class GuardianAuthService {
       lastLoginAt: account.lastLoginAt || null,
       failedLoginCount: Number(account.failedLoginCount || 0),
       blockedUntil: account.blockedUntil || null,
+      temporaryAccess: { active: temporaryActive, expiresAt: temporaryActive ? temporary.expiresAt : null },
     };
   }
 
