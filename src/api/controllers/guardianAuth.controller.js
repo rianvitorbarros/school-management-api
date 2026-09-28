@@ -354,6 +354,16 @@ class GuardianAuthController {
     }
   }
 
+  async createTemporaryAccess(req, res) {
+    try { return res.status(201).json(await guardianAuthService.createTemporaryAccess({ schoolId: getSchoolId(req), accountId: req.params.accountId, actor: req.user })); }
+    catch (error) { return sendError(res, error, 'Nao foi possivel gerar o acesso temporario.'); }
+  }
+
+  async revokeTemporaryAccess(req, res) {
+    try { return res.json(await guardianAuthService.revokeTemporaryAccess({ schoolId: getSchoolId(req), accountId: req.params.accountId, actor: req.user })); }
+    catch (error) { return sendError(res, error, 'Nao foi possivel revogar o acesso temporario.'); }
+  }
+
   async unlockAccount(req, res) {
     try {
       const schoolId = getSchoolId(req);

@@ -78,6 +78,7 @@ const PIN_RECOVERY_GENERIC_MESSAGE =
 const PIN_RECOVERY_LIMIT_MESSAGE =
   'Nao foi possivel continuar agora. Aguarde alguns minutos e tente novamente.';
 const PIN_RECOVERY_PURGE_DELAY_MINUTES = 24 * 60;
+const GUARDIAN_TEMP_ACCESS_TTL_MINUTES = Number(process.env.GUARDIAN_TEMP_ACCESS_TTL_MINUTES || 15);
 const LEGACY_EVENT_TYPES_BY_STATUS = Object.freeze({
   failed: [
     'FIRST_ACCESS_FAILED',
@@ -334,12 +335,29 @@ class GuardianAuthService {
   }
 
   _assertValidPin(pin) {
-    if (!/^\d{6}$/.test(String(pin || ''))) {
+    if (!/^\d{6}$/.test(String(pin || '')) && !/^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/.test(String(pin || ''))) {
       throw this._createHttpError(
         'O PIN deve conter exatamente 6 digitos numericos.',
         400
       );
     }
+  }
+
+  async _validateGuardianCredential(account, credential) {
+    if (account.pinHash && await this.bcrypt.compare(String(credential), account.pinHash)) return { valid: true, type: 'PERMANENT_PIN' };
+    const temporary = account.temporaryAccess;
+    const now = this._getNow();
+    if (!temporary?.passwordHash || !temporary.credentialId || temporary.usedAt || temporary.revokedAt || !temporary.expiresAt || new Date(temporary.expiresAt) <= now) return { valid: false };
+    if (!await this.bcrypt.compare(String(credential), temporary.passwordHash)) return { valid: false };
+    const consumed = await this.GuardianAccessAccountModel.findOneAndUpdate({ _id: account._id, 'temporaryAccess.credentialId': temporary.credentialId, 'temporaryAccess.usedAt': null, 'temporaryAccess.revokedAt': null, 'temporaryAccess.expiresAt': { $gt: now } }, { $set: { 'temporaryAccess.usedAt': now } }, { new: true });
+    return consumed ? { valid: true, type: 'TEMPORARY_ACCESS' } : { valid: false };
+  }
+
+  _generateTemporaryCredential() {
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const bytes = this.crypto.randomBytes(8);
+    const value = [...bytes].map((item) => alphabet[item % alphabet.length]).join('');
+    return `${value.slice(0, 4)}-${value.slice(4)}`;
   }
 
   _assertGuardianJwtSecret() {
@@ -3356,7 +3374,7 @@ class GuardianAuthService {
     const query = this.GuardianAccessAccountModel.find(filter);
 
     if (includePinHash && query && typeof query.select === 'function') {
-      query.select('+pinHash');
+      query.select('+pinHash +temporaryAccess.passwordHash +temporaryAccess.credentialId');
     }
 
     const result = await query;
@@ -3437,7 +3455,7 @@ class GuardianAuthService {
       const account = await this.GuardianAccessAccountModel.findOne({
         school_id: school._id,
         identifierNormalized: normalizedCpf,
-      }).select('+pinHash');
+      }).select('+pinHash +temporaryAccess.passwordHash +temporaryAccess.credentialId');
 
       if (!account || !account.pinHash || account.status !== 'active') {
         throw this._createHttpError('CPF ou PIN invalidos.', 401);
@@ -3466,7 +3484,8 @@ class GuardianAuthService {
         );
       }
 
-      const isMatch = await this.bcrypt.compare(String(pin), account.pinHash);
+      const credential = await this._validateGuardianCredential(account, pin);
+      const isMatch = credential.valid;
 
       if (!isMatch) {
         await this._registerLoginFailure(
@@ -3530,7 +3549,8 @@ class GuardianAuthService {
         );
       }
 
-      const isMatch = await this.bcrypt.compare(String(pin), account.pinHash);
+      const credential = await this._validateGuardianCredential(account, pin);
+      const isMatch = credential.valid;
 
       if (!isMatch) {
         await this._registerLoginFailure(
@@ -4259,6 +4279,23 @@ class GuardianAuthService {
           'PIN resetado com sucesso. O responsavel devera usar a recuperacao de PIN.',
       };
     });
+  }
+
+  async createTemporaryAccess({ schoolId, accountId, actor }) {
+    const account = await this._getAdminAccountOrThrow(accountId, schoolId, actor);
+    if (account.status !== 'active') throw this._createHttpError('O portal deste responsavel nao esta ativo.', 409);
+    const password = this._generateTemporaryCredential();
+    const now = this._getNow();
+    account.temporaryAccess = { credentialId: this.crypto.randomUUID(), passwordHash: await this.bcrypt.hash(password, PIN_SALT_ROUNDS), createdAt: now, createdBy: actor.id || actor._id || null, expiresAt: new Date(now.getTime() + GUARDIAN_TEMP_ACCESS_TTL_MINUTES * 60 * 1000), usedAt: null, revokedAt: null };
+    await account.save();
+    await this._registerEvent({ schoolId, accountId: account._id, tutorId: account.tutorId, actorType: 'staff', actorUserId: actor.id || actor._id || null, eventType: GUARDIAN_ACCESS_EVENT_TYPES.TEMPORARY_ACCESS_CREATED, metadata: { expiresAt: account.temporaryAccess.expiresAt } });
+    return { temporaryPassword: password, expiresAt: account.temporaryAccess.expiresAt, loginIdentifier: account.identifierMasked };
+  }
+
+  async revokeTemporaryAccess({ schoolId, accountId, actor }) {
+    const account = await this._getAdminAccountOrThrow(accountId, schoolId, actor);
+    if (account.temporaryAccess?.credentialId && !account.temporaryAccess.usedAt) { account.temporaryAccess.revokedAt = this._getNow(); await account.save(); await this._registerEvent({ schoolId, accountId: account._id, tutorId: account.tutorId, actorType: 'staff', actorUserId: actor.id || actor._id || null, eventType: GUARDIAN_ACCESS_EVENT_TYPES.TEMPORARY_ACCESS_REVOKED }); }
+    return { revoked: true };
   }
 
   async unlockAccount({

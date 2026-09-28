@@ -75,6 +75,15 @@ const guardianAccessAccountSchema = new Schema(
       default: 0,
       min: 0,
     },
+    temporaryAccess: {
+      credentialId: { type: String, default: null, select: false },
+      passwordHash: { type: String, default: null, select: false },
+      expiresAt: { type: Date, default: null },
+      usedAt: { type: Date, default: null },
+      revokedAt: { type: Date, default: null },
+      createdBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+      createdAt: { type: Date, default: null },
+    },
   },
   {
     timestamps: true,

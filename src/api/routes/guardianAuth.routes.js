@@ -73,6 +73,8 @@ router.post(
   verifyToken,
   guardianAuthController.resetPin
 );
+router.post('/guardian-access-accounts/:accountId/temporary-access', verifyToken, guardianAuthController.createTemporaryAccess);
+router.post('/guardian-access-accounts/:accountId/temporary-access/revoke', verifyToken, guardianAuthController.revokeTemporaryAccess);
 router.get(
   '/guardian-access-accounts/:accountId/events',
   verifyToken,
