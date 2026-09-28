@@ -9,6 +9,7 @@
     "academy:render": "node scripts/run-academy-hub.js render",
     "seed": "node src/seed.js",
     "seed:platform-admin": "node scripts/seed_platform_admin.js",
+    "activity-pack:roseane": "node scripts/import-roseane-activity-pack.js",
     "test": "node --test src/tests",
     "test:omr:v2": "node --test src/tests/services/omr.v2-engine.test.js",
     "test:omr:templates": "node --test src/tests/services/omr.v2-engine.test.js",

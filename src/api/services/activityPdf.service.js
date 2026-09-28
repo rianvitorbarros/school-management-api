@@ -12,6 +12,8 @@ class ActivityPdfService {
 
   async generateActivityPrintPdf({
     originalPdfBuffer,
+    sourceImageBuffer,
+    sourceImageContentType,
     activityBook,
     activityPage,
     school,
@@ -21,6 +23,20 @@ class ActivityPdfService {
     printRun,
     printDate,
   }) {
+    if (String(activityPage?.sourceKind || 'pdf-page') === 'image') {
+      return this.generateImageActivityPrintPdf({
+        sourceImageBuffer,
+        sourceImageContentType,
+        activityBook,
+        activityPage,
+        school,
+        classDoc,
+        teacher,
+        students,
+        printRun,
+        printDate,
+      });
+    }
     if (!Buffer.isBuffer(originalPdfBuffer) || originalPdfBuffer.length === 0) {
       throw this.createPdfError('PDF original invalido.', 'INVALID_SOURCE_PDF');
     }
@@ -109,6 +125,44 @@ class ActivityPdfService {
       });
     }
 
+    return Buffer.from(await outputPdf.save());
+  }
+
+  async generateImageActivityPrintPdf({
+    sourceImageBuffer, sourceImageContentType, activityBook, activityPage,
+    school, classDoc, teacher, students, printRun, printDate,
+  }) {
+    if (!Buffer.isBuffer(sourceImageBuffer) || sourceImageBuffer.length === 0) {
+      throw this.createPdfError('Imagem original invalida.', 'INVALID_SOURCE_IMAGE');
+    }
+    const outputPdf = await PDFDocument.create();
+    const fonts = {
+      regular: await outputPdf.embedFont(StandardFonts.Helvetica),
+      bold: await outputPdf.embedFont(StandardFonts.HelveticaBold),
+    };
+    const image = /jpe?g/i.test(String(sourceImageContentType || ''))
+      ? await outputPdf.embedJpg(sourceImageBuffer)
+      : await outputPdf.embedPng(sourceImageBuffer);
+    const logoImage = await this.embedSchoolLogo(outputPdf, school);
+    const layout = this.resolveLayout(activityBook, activityPage);
+    const printDateLabel = this.formatBusinessDate(printDate);
+    const pageWidth = 595.28;
+    const pageHeight = 841.89;
+    const headerHeight = pageHeight * (Number(layout.headerOverlay?.heightPct || 18) / 100);
+    for (let index = 0; index < students.length; index += 1) {
+      const page = outputPdf.addPage([pageWidth, pageHeight]);
+      const scale = Math.min(pageWidth / image.width, pageHeight / image.height);
+      const width = image.width * scale;
+      const height = image.height * scale;
+      page.drawImage(image, { x: (pageWidth - width) / 2, y: (pageHeight - height) / 2, width, height });
+      const rect = { x: 0, y: pageHeight - headerHeight, width: pageWidth, height: headerHeight };
+      page.drawRectangle({ ...rect, color: rgb(1, 1, 1), opacity: 1 });
+      const qrImage = await outputPdf.embedPng(await this.generateQrPng(printRun.items[index].qrCodePayload));
+      this.drawAcademyHeader(page, {
+        rect, fonts, logoImage, qrImage, school, classDoc, teacher,
+        student: students[index], activityBook, activityPage, printDateLabel,
+      });
+    }
     return Buffer.from(await outputPdf.save());
   }
 

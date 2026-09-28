@@ -7,6 +7,7 @@ const ACTIVITY_PAGE_TYPES = ['cover', 'index', 'activity', 'support'];
 const ACTIVITY_PRINT_LAYOUT_MODES = ['overlay', 'crop-and-recompose'];
 const ACTIVITY_PRINT_SCALE_MODES = ['fit-width', 'fit-page'];
 const ACTIVITY_THUMBNAIL_STATUSES = ['pending', 'ready', 'failed'];
+const ACTIVITY_SOURCE_KINDS = ['pdf-page', 'image'];
 
 const headerOverlaySchema = new Schema(
   {
@@ -120,6 +121,22 @@ const activityPageSchema = new Schema(
       type: [String],
       default: [],
       index: true,
+    },
+    sourceKind: {
+      type: String,
+      enum: ACTIVITY_SOURCE_KINDS,
+      default: 'pdf-page',
+      index: true,
+    },
+    sourceImageKey: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    sourceImageContentType: {
+      type: String,
+      trim: true,
+      default: '',
     },
     thumbnailKey: {
       type: String,

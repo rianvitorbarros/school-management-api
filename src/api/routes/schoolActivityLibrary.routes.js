@@ -58,4 +58,22 @@ router.post('/:activityPageId/print', async (req, res) => {
   }
 });
 
+router.post('/:activityPageId/preview', async (req, res) => {
+  try {
+    const pdf = await activityPrintService.createPreviewPdf({
+      activityPageId: req.params.activityPageId,
+      payload: req.body,
+      actor: req.user,
+    });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Cache-Control', 'private, max-age=60');
+    return res.status(200).send(pdf);
+  } catch (error) {
+    return res.status(error.status || error.statusCode || 500).json({
+      message: error.message || 'Erro ao gerar pre-visualizacao da atividade.',
+      code: error.code || 'ACTIVITY_PREVIEW_ERROR',
+    });
+  }
+});
+
 module.exports = router;

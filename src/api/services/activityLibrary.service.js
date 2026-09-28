@@ -290,8 +290,9 @@ function shouldExposeThumbnailUrl(thumbnailKey, thumbnailStatus) {
   if (!key) return false;
 
   const status = normalizeText(thumbnailStatus).toLowerCase();
-  if (!status) return true;
-  return status === 'ready';
+  // Object availability is authoritative. Older imports can leave the status
+  // as pending after successfully uploading the thumbnail to R2.
+  return status !== 'failed';
 }
 
 async function buildSignedThumbnailUrl(thumbnailKey, expiresIn = 900, thumbnailStatus = 'ready') {
@@ -805,7 +806,7 @@ class ActivityLibraryService {
     };
 
     const visibleBooks = await ActivityBook.find(visibleBookQuery)
-      .select('_id title subject segment grade visibility')
+      .select('_id title subject segment grade visibility originalPdfKey')
       .lean();
 
     const visibleBookIds = visibleBooks.map((book) => book._id);
@@ -877,6 +878,8 @@ class ActivityLibraryService {
         segment: activityPage.segment || book.segment || '',
         grade: activityPage.grade || book.grade || '',
         pageNumber: activityPage.pageNumber,
+        sourceKind: activityPage.sourceKind || 'pdf-page',
+        hasOriginalPdf: Boolean(normalizeText(book.originalPdfKey)),
         thumbnailKey: activityPage.thumbnailKey || '',
         thumbnailStatus: activityPage.thumbnailStatus || 'pending',
         thumbnailError: activityPage.thumbnailError || null,

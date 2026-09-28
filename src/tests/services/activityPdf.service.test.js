@@ -86,6 +86,25 @@ test('generateActivityPrintPdf produces one page per student without logo', asyn
   assert.equal(generated.getPageCount(), 2);
 });
 
+test('generateActivityPrintPdf accepts an image activity and preserves one sheet per student', async () => {
+  const service = new ActivityPdfService();
+  const result = await service.generateActivityPrintPdf({
+    sourceImageBuffer: PNG_1X1,
+    sourceImageContentType: 'image/png',
+    activityBook: { title: 'Pack Roseane' },
+    activityPage: { sourceKind: 'image', title: 'Atividade 01', pageNumber: 1, headerOverlay: { heightPct: 18 } },
+    school: { name: 'Escola Teste' },
+    classDoc: { name: 'Maternal I' },
+    teacher: { fullName: 'Roseane' },
+    students: [{ fullName: 'Aluno teste' }],
+    printRun: createPrintRun(1),
+    printDate: new Date('2026-06-04T12:00:00.000Z'),
+  });
+  const generated = await PDFDocument.load(result);
+  assert.equal(generated.getPageCount(), 1);
+  assert.deepEqual(generated.getPage(0).getSize(), { width: 595.28, height: 841.89 });
+});
+
 test('embedSchoolLogo supports PNG and JPEG buffers', async () => {
   const service = new ActivityPdfService();
   let pngCalled = false;

@@ -60,6 +60,7 @@ const notificationRoutes = require('./api/routes/notification.routes.js');
 
 const invoiceCompensationRoutes = require('./api/routes/invoiceCompensation.routes.js');
 const guardianAuthRoutes = require('./api/routes/guardianAuth.routes.js');
+const reEnrollmentRoutes = require('./api/routes/reEnrollment.routes.js');
 
 const examRoutes = require('./api/routes/exam.routes.js');
 const omrRoutes = require('./api/routes/omr.routes.js');
@@ -97,6 +98,7 @@ app.use('/api/platform', platformRoutes);
 app.use('/api/auth', authRoutes);                 // Login Staff/Admin
 app.use('/api/auth/student', authStudentRoutes);  // Login Aluno
 app.use('/api', guardianAuthRoutes);
+app.use('/api', reEnrollmentRoutes);
 
 // Funcionalidades Principais
 app.use('/api/schools', schoolRoutes);

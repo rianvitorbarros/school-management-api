@@ -379,6 +379,44 @@ function buildRegistrationStaffNotification(eventName, payload) {
   };
 }
 
+function buildReEnrollmentStaffNotification(eventName, payload) {
+  if (eventName !== 're_enrollment:created') return null;
+  const requestId = textValue(payload.requestId, payload._id, payload.id);
+  const studentName = textValue(payload.studentName, 'Aluno');
+  const currentClassName = textValue(payload.currentClassName);
+  const targetClassName = textValue(payload.targetClassName);
+  const responsibleName = textValue(payload.responsibleName);
+  return {
+    audience: 'staff',
+    targetRoles: staffTargetsFrom(payload),
+    type: 're_enrollment_request_created',
+    domain: 'academic',
+    priority: 'info',
+    title: 'Nova solicitação de rematrícula',
+    summary: [studentName, currentClassName && targetClassName && `${currentClassName} → ${targetClassName}`, responsibleName && `Responsável: ${responsibleName}`].filter(Boolean).join(' • '),
+    routeKey: 'staff.reEnrollmentRequests',
+    entity: 're_enrollment_request',
+    entityId: requestId,
+    threadKey: `re-enrollment:${requestId}`,
+    metadata: { requestId, reEnrollmentRequestId: requestId, studentName, currentClassName, targetClassName, responsibleName, action: 'open_reenrollment_review' },
+  };
+}
+
+function buildReEnrollmentGuardianNotification(eventName, payload) {
+  if (!['re_enrollment:approved', 're_enrollment:rejected'].includes(eventName)) return null;
+  const isApproved = eventName === 're_enrollment:approved';
+  const requestId = textValue(payload.requestId, payload._id, payload.id);
+  const guardianId = idValue(payload.guardianId);
+  if (!guardianId) return null;
+  return {
+    audience: 'guardian', targetGuardianIds: [guardianId], type: `re_enrollment_request_${isApproved ? 'approved' : 'rejected'}`,
+    domain: 'academic', priority: isApproved ? 'success' : 'warning', title: isApproved ? 'Rematrícula aprovada' : 'Rematrícula rejeitada',
+    summary: `A escola analisou a solicitação de rematrícula de ${textValue(payload.studentName, 'seu aluno')}.`,
+    routeKey: 'guardian.reEnrollment', entity: 're_enrollment_request', entityId: requestId, threadKey: `re-enrollment:${requestId}`,
+    metadata: { requestId, reEnrollmentRequestId: requestId, status: isApproved ? 'APPROVED' : 'REJECTED' },
+  };
+}
+
 function removeEmptyMetadata(metadata = {}) {
   return Object.fromEntries(
     Object.entries(metadata).filter(([, value]) => value !== null && value !== undefined && String(value).trim() !== '')
@@ -392,6 +430,8 @@ function buildNotifications(eventName, payload) {
     buildDocumentStaffNotification(eventName, payload),
     buildDocumentGuardianNotification(eventName, payload),
     buildRegistrationStaffNotification(eventName, payload),
+    buildReEnrollmentStaffNotification(eventName, payload),
+    buildReEnrollmentGuardianNotification(eventName, payload),
   ].filter(Boolean);
 }
 

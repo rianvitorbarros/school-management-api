@@ -323,6 +323,12 @@ function registerAppListeners() {
             broadcast({ type: eventName, payload }, payload.schoolId || payload.school_id);
         });
     });
+
+    ['re_enrollment:created', 're_enrollment:approved', 're_enrollment:rejected'].forEach((eventName) => {
+        appEmitter.on(eventName, (payload) => {
+            broadcast({ type: eventName, payload }, payload.schoolId || payload.school_id);
+        });
+    });
 }
 
 /**

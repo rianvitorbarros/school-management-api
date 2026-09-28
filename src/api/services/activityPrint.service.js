@@ -81,6 +81,61 @@ class ActivityPrintService {
     return this.createPrintRunFromContext({ activityPageId, payload, context });
   }
 
+  // Reuses the production PDF composer without persisting an ActivityPrintRun.
+  // The QR payload intentionally has no valid correction prefix.
+  async createPreviewPdf({ activityPageId, payload = {}, actor = {} }) {
+    const context = this.buildSchoolContext(actor);
+    const schoolId = context.schoolId;
+    ensureObjectId(schoolId, 'INVALID_SCHOOL', 'Escola invalida.');
+    ensureObjectId(activityPageId, 'ACTIVITY_PAGE_NOT_FOUND', 'ActivityPage nao encontrada.');
+
+    const activityPage = await this.ActivityPageModel.findById(activityPageId).lean();
+    const activityBook = activityPage
+      ? await this.ActivityBookModel.findById(activityPage.bookId).lean()
+      : null;
+    if (!activityPage || !activityBook || activityBook.status !== 'published' || activityPage.status !== 'published') {
+      throw createHttpError('Atividade nao publicada.', 409, 'ACTIVITY_NOT_PUBLISHED');
+    }
+    if (!activityPage.enabled || activityPage.printable === false || (activityPage.pageType || 'activity') !== 'activity') {
+      throw createHttpError('Atividade nao esta disponivel para impressao.', 409, 'ACTIVITY_PAGE_NOT_PRINTABLE');
+    }
+    if (!this.isBookVisibleToSchool(activityBook, schoolId)) {
+      throw createHttpError('Atividade nao disponivel para esta escola.', 403, 'ACTIVITY_NOT_AVAILABLE_FOR_SCHOOL');
+    }
+
+    const classId = normalizeText(payload.classId);
+    ensureObjectId(classId, 'INVALID_CLASS', 'Turma invalida.');
+    const classDoc = await this.resolveClassForContext({ context, schoolId, classId });
+    const { teacherDoc } = await this.resolveTeacher({ context, schoolId, teacherId: payload.teacherId });
+    const school = await this.SchoolModel.findById(schoolId)
+      .select('name legalName logo.contentType +logo.data logoUrl')
+      .lean();
+    if (!school) throw createHttpError('Escola nao encontrada.', 404, 'INVALID_SCHOOL');
+    const printDate = this.parseBusinessDateInput(payload.printDate, 'America/Sao_Paulo');
+    if (!printDate) throw createHttpError('printDate invalida.', 400, 'INVALID_PRINT_DATE');
+
+    const isImageSource = String(activityPage.sourceKind || 'pdf-page') === 'image';
+    const sourceImageBuffer = isImageSource
+      ? await this.r2StorageService.downloadBuffer(activityPage.sourceImageKey)
+      : null;
+    const originalPdfBuffer = isImageSource
+      ? null
+      : await this.r2StorageService.downloadBuffer(activityBook.originalPdfKey);
+    return this.activityPdfService.generateActivityPrintPdf({
+      originalPdfBuffer,
+      sourceImageBuffer,
+      sourceImageContentType: activityPage.sourceImageContentType,
+      activityBook,
+      activityPage,
+      school,
+      classDoc,
+      teacher: teacherDoc,
+      students: [{ fullName: '____________________________' }],
+      printRun: { items: [{ qrCodePayload: 'academyhub-preview' }] },
+      printDate,
+    });
+  }
+
   async createPlatformPrintTestRun({
     schoolId,
     activityPageId,
@@ -212,9 +267,17 @@ class ActivityPrintService {
     });
 
     try {
-      const originalPdfBuffer = await this.r2StorageService.downloadBuffer(activityBook.originalPdfKey);
+      const isImageSource = String(activityPage.sourceKind || 'pdf-page') === 'image';
+      const sourceImageBuffer = isImageSource
+        ? await this.r2StorageService.downloadBuffer(activityPage.sourceImageKey)
+        : null;
+      const originalPdfBuffer = isImageSource
+        ? null
+        : await this.r2StorageService.downloadBuffer(activityBook.originalPdfKey);
       const generatedPdfBuffer = await this.activityPdfService.generateActivityPrintPdf({
         originalPdfBuffer,
+        sourceImageBuffer,
+        sourceImageContentType: activityPage.sourceImageContentType,
         activityBook,
         activityPage,
         school,
@@ -285,7 +348,7 @@ class ActivityPrintService {
       }
 
       if (error.code === 'R2_UPLOAD_FAILED') throw error;
-      if (error.code === 'INVALID_SOURCE_PDF') {
+      if (error.code === 'INVALID_SOURCE_PDF' || error.code === 'INVALID_SOURCE_IMAGE') {
         throw createHttpError(error.message, 400, 'PDF_GENERATION_FAILED');
       }
 
