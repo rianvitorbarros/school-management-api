@@ -81,6 +81,24 @@ router.get('/activity-corrections/pending', async (req, res) => {
   }
 });
 
+router.get('/activity-corrections/print-runs', async (req, res) => {
+  try {
+    const schoolId = req.user.school_id || req.user.schoolId;
+    const result = await activityCorrectionService.listPrintRunsForCorrection({
+      schoolId,
+      actor: req.user,
+      filters: req.query,
+    });
+
+    return res.status(200).json(result);
+  } catch (error) {
+    return res.status(error.status || error.statusCode || 500).json({
+      message: error.message || 'Erro ao listar atividades impressas para correcao.',
+      code: error.code || 'ACTIVITY_CORRECTION_ERROR',
+    });
+  }
+});
+
 router.get('/activity-corrections', async (req, res) => {
   try {
     const schoolId = req.user.school_id || req.user.schoolId;

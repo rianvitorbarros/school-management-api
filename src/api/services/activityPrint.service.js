@@ -6,7 +6,9 @@ const ActivityPage = require('../models/activityPage.model');
 const ActivityPrintRun = require('../models/activityPrintRun.model');
 const ClassModel = require('../models/class.model');
 const Enrollment = require('../models/enrollment.model');
+const Periodo = require('../models/periodo.model');
 const School = require('../models/school.model');
+const SchoolYear = require('../models/schoolyear.model');
 const Student = require('../models/student.model');
 const User = require('../models/user.model');
 const activityPdfService = require('./activityPdf.service');
@@ -54,7 +56,9 @@ class ActivityPrintService {
     ActivityPrintRunModel = ActivityPrintRun,
     ClassModelRef = ClassModel,
     EnrollmentModel = Enrollment,
+    PeriodoModel = Periodo,
     SchoolModel = School,
+    SchoolYearModel = SchoolYear,
     StudentModel = Student,
     UserModel = User,
     activityPdfServiceRef = activityPdfService,
@@ -67,7 +71,9 @@ class ActivityPrintService {
     this.ActivityPrintRunModel = ActivityPrintRunModel;
     this.ClassModel = ClassModelRef;
     this.EnrollmentModel = EnrollmentModel;
+    this.PeriodoModel = PeriodoModel;
     this.SchoolModel = SchoolModel;
+    this.SchoolYearModel = SchoolYearModel;
     this.StudentModel = StudentModel;
     this.UserModel = UserModel;
     this.activityPdfService = activityPdfServiceRef;
@@ -254,6 +260,13 @@ class ActivityPrintService {
       throw createHttpError('printDate invalida.', 400, 'INVALID_PRINT_DATE');
     }
 
+    const academicContext = await this.resolveAcademicContext({
+      schoolId,
+      classDoc,
+      printDate,
+      requestedTermId: payload.termId,
+    });
+
     const printRun = await this.createPendingPrintRun({
       schoolId,
       context,
@@ -262,6 +275,7 @@ class ActivityPrintService {
       classDoc,
       teacherDoc,
       printDate,
+      academicContext,
       students,
       school,
     });
@@ -324,6 +338,8 @@ class ActivityPrintService {
           activityPageId: String(printRun.activityPageId),
           schoolId: String(printRun.schoolId),
           classId: String(printRun.classId),
+          termId: String(printRun.termId),
+          academicYearId: String(printRun.academicYearId),
           studentCount: printRun.studentIds.length,
           status: printRun.status,
           generatedPdfKey: printRun.generatedPdfKey,
@@ -476,6 +492,63 @@ class ActivityPrintService {
     return { teacherDoc, teacherId: String(teacherDoc._id) };
   }
 
+  async resolveAcademicContext({ schoolId, classDoc, printDate, requestedTermId = null }) {
+    const academicYear = Number(classDoc?.schoolYear);
+    if (!Number.isInteger(academicYear)) {
+      throw createHttpError('Turma sem ano letivo valido.', 409, 'INVALID_CLASS_ACADEMIC_CONTEXT');
+    }
+
+    const schoolYear = await this.SchoolYearModel.findOne({
+      school_id: schoolId,
+      year: academicYear,
+    }).lean();
+
+    if (!schoolYear) {
+      throw createHttpError(
+        'Ano letivo da turma nao encontrado para a escola.',
+        409,
+        'ACADEMIC_YEAR_NOT_FOUND'
+      );
+    }
+
+    let term;
+    if (requestedTermId) {
+      ensureObjectId(requestedTermId, 'INVALID_TERM_ID', 'Bimestre invalido.');
+      term = await this.PeriodoModel.findOne({
+        _id: requestedTermId,
+        school_id: schoolId,
+        anoLetivoId: schoolYear._id,
+        tipo: 'Letivo',
+      }).lean();
+
+      if (!term) {
+        throw createHttpError(
+          'Bimestre nao pertence ao ano letivo da turma.',
+          409,
+          'INVALID_TERM_FOR_CLASS'
+        );
+      }
+    } else {
+      term = await this.PeriodoModel.findOne({
+        school_id: schoolId,
+        anoLetivoId: schoolYear._id,
+        tipo: 'Letivo',
+        dataInicio: { $lte: printDate },
+        dataFim: { $gte: printDate },
+      }).sort({ dataInicio: -1 }).lean();
+    }
+
+    if (!term) {
+      throw createHttpError(
+        'Nao foi encontrado bimestre letivo para a data de impressao e turma selecionadas.',
+        409,
+        'ACADEMIC_TERM_NOT_FOUND'
+      );
+    }
+
+    return { schoolYear, term };
+  }
+
   async createPendingPrintRun({
     schoolId,
     context,
@@ -484,6 +557,7 @@ class ActivityPrintService {
     classDoc,
     teacherDoc,
     printDate,
+    academicContext,
     students,
     school,
   }) {
@@ -502,6 +576,8 @@ class ActivityPrintService {
       bookId: activityBook._id,
       schoolId,
       classId: classDoc._id,
+      termId: academicContext.term._id,
+      academicYearId: academicContext.schoolYear._id,
       teacherId: teacherDoc?._id || null,
       requestedByUserId: context.requestedByUserId || null,
       requestedByPlatformAdminId: context.requestedByPlatformAdminId || null,
@@ -521,6 +597,8 @@ class ActivityPrintService {
         bookTitle: activityBook?.title || '',
         activityTitle: activityPage?.title || '',
         pageNumber: activityPage?.pageNumber || 1,
+        termName: academicContext.term?.titulo || '',
+        academicYear: academicContext.schoolYear?.year || null,
       },
       items,
     });

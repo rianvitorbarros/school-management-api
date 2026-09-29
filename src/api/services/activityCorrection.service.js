@@ -4,6 +4,7 @@ const ActivityBook = require('../models/activityBook.model');
 const ActivityCorrection = require('../models/activityCorrection.model');
 const ActivityPage = require('../models/activityPage.model');
 const ActivityPrintRun = require('../models/activityPrintRun.model');
+const appEmitter = require('../../loaders/eventEmitter');
 const {
   ensureClassAccess,
   ensureStudentAccessInAnyOwnedClass,
@@ -47,6 +48,10 @@ function createHttpError(message, status = 400, code = 'ACTIVITY_CORRECTION_ERRO
 
 function normalizeText(value) {
   return String(value || '').trim();
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function sameId(left, right) {
@@ -112,6 +117,7 @@ class ActivityCorrectionService {
     isPrivilegedActorFn = isPrivilegedActor,
     parseBusinessDateInputFn = parseBusinessDateInput,
     shiftBusinessDateFn = shiftBusinessDate,
+    eventEmitter = appEmitter,
   } = {}) {
     this.ActivityCorrectionModel = ActivityCorrectionModel;
     this.ActivityPrintRunModel = ActivityPrintRunModel;
@@ -124,6 +130,7 @@ class ActivityCorrectionService {
     this.isPrivilegedActor = isPrivilegedActorFn;
     this.parseBusinessDateInput = parseBusinessDateInputFn;
     this.shiftBusinessDate = shiftBusinessDateFn;
+    this.eventEmitter = eventEmitter;
   }
 
   async resolveQr({ schoolId, actor = {}, qrCodePayload }) {
@@ -247,6 +254,12 @@ class ActivityCorrectionService {
         reviewedAt: null,
       });
 
+      this.emitCorrectionUpdated({
+        schoolId,
+        printRun: resolution.printRun,
+        correction,
+      });
+
       return { correction: this.serializeCorrection(correction) };
     } catch (error) {
       if (error?.code === 11000) {
@@ -303,7 +316,82 @@ class ActivityCorrectionService {
     correction.correctionDate = correction.correctedAt;
     await correction.save();
 
+    this.emitCorrectionUpdated({
+      schoolId,
+      printRun: {
+        classId: correction.classId,
+        teacherId: correction.teacherId,
+        termId: null,
+      },
+      correction,
+    });
+
     return { correction: this.serializeCorrection(correction) };
+  }
+
+  async listPrintRunsForCorrection({ schoolId, actor = {}, filters = {} }) {
+    this.ensureActorAllowed(actor);
+
+    const query = await this.buildPrintRunCorrectionQuery({ schoolId, actor, filters });
+    const printRuns = await this.ActivityPrintRunModel.find(query)
+      .sort({ printDate: -1, createdAt: -1 })
+      .lean();
+
+    const qrCodePayloads = printRuns.flatMap((printRun) =>
+      toArray(printRun.items)
+        .map((item) => item?.qrCodePayload)
+        .filter(Boolean)
+    );
+    const corrections = qrCodePayloads.length > 0
+      ? await this.ActivityCorrectionModel.find({
+          schoolId,
+          qrCodePayload: { $in: qrCodePayloads },
+        })
+          .select('qrCodePayload status correctedAt correctionDate')
+          .lean()
+      : [];
+    const correctionByQr = new Map(
+      corrections.map((correction) => [correction.qrCodePayload, correction])
+    );
+
+    const items = printRuns.map((printRun) => {
+      const students = toArray(printRun.items).map((item) => {
+        const correction = correctionByQr.get(item.qrCodePayload);
+        const status = correction && correction.status !== 'voided'
+          ? (correction.status || 'corrected')
+          : 'pending';
+        return {
+          studentId: toStringId(item.studentId),
+          studentName: item.studentName || '',
+          qrCodePayload: item.qrCodePayload,
+          pageNumber: item.pageNumber || printRun.snapshot?.pageNumber || 1,
+          status,
+          correctionId: correction ? toStringId(correction._id) : null,
+          correctedAt: correction?.correctedAt || correction?.correctionDate || null,
+        };
+      });
+      const pendingCount = students.filter((student) => student.status === 'pending').length;
+
+      return {
+        id: toStringId(printRun._id),
+        activityPageId: toStringId(printRun.activityPageId),
+        bookId: toStringId(printRun.bookId),
+        classId: toStringId(printRun.classId),
+        teacherId: toStringId(printRun.teacherId),
+        termId: toStringId(printRun.termId),
+        termName: printRun.snapshot?.termName || '',
+        bookTitle: printRun.snapshot?.bookTitle || '',
+        activityTitle: printRun.snapshot?.activityTitle || '',
+        subject: printRun.snapshot?.subject || '',
+        printDate: formatDateOnly(printRun.printDate),
+        totalStudents: students.length,
+        pendingCount,
+        correctedCount: students.length - pendingCount,
+        students,
+      };
+    });
+
+    return { items, total: items.length };
   }
 
   async listCorrections({ schoolId, actor = {}, filters = {} }) {
@@ -528,6 +616,61 @@ class ActivityCorrectionService {
     }
 
     return query;
+  }
+
+  async buildPrintRunCorrectionQuery({ schoolId, actor, filters }) {
+    const query = { schoolId, status: 'generated' };
+    const privileged = this.isPrivilegedActor(actor);
+
+    if (!filters.classId) {
+      throw createHttpError('Informe a turma para listar atividades impressas.', 400, 'INVALID_CLASS_ID');
+    }
+    ensureObjectId(filters.classId, 'INVALID_CLASS_ID', 'Turma invalida.');
+    if (!privileged) await this.ensureClassAccess(actor, schoolId, filters.classId);
+    query.classId = filters.classId;
+
+    if (!filters.termId) {
+      throw createHttpError('Informe o bimestre para listar atividades impressas.', 400, 'INVALID_TERM_ID');
+    }
+    ensureObjectId(filters.termId, 'INVALID_TERM_ID', 'Bimestre invalido.');
+    query.termId = filters.termId;
+
+    const actorId = extractId(actor.id || actor._id);
+    const requestedTeacherId = normalizeText(filters.teacherId);
+    if (!privileged) {
+      if (!actorId) {
+        return { schoolId, _id: { $exists: false } };
+      }
+      if (requestedTeacherId && !sameId(requestedTeacherId, actorId)) {
+        throw createHttpError('Professor invalido para a sessao atual.', 403, 'ACTIVITY_CORRECTION_FORBIDDEN');
+      }
+      query.teacherId = actorId;
+    } else if (requestedTeacherId) {
+      ensureObjectId(requestedTeacherId, 'INVALID_TEACHER_ID', 'Professor invalido.');
+      query.teacherId = requestedTeacherId;
+    }
+
+    const subject = normalizeText(filters.subject);
+    if (subject) {
+      query['snapshot.subject'] = { $regex: `^${escapeRegex(subject)}$`, $options: 'i' };
+    }
+
+    return query;
+  }
+
+  emitCorrectionUpdated({ schoolId, printRun = {}, correction }) {
+    if (!this.eventEmitter?.emit) return;
+    this.eventEmitter.emit('activity:correction-updated', {
+      schoolId: toStringId(schoolId),
+      school_id: toStringId(schoolId),
+      classId: toStringId(printRun.classId),
+      teacherId: toStringId(printRun.teacherId),
+      termId: toStringId(printRun.termId),
+      activityPrintRunId: toStringId(correction.activityPrintRunId),
+      qrCodePayload: correction.qrCodePayload,
+      correctionId: toStringId(correction._id),
+      status: correction.status || 'corrected',
+    });
   }
 
   ensureActorAllowed(actor = {}) {

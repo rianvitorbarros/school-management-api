@@ -73,6 +73,21 @@ const activityPrintRunSchema = new Schema(
       required: true,
       index: true,
     },
+    // The official academic context at the time the sheet was printed.  This
+    // is intentionally a Periodo reference instead of a duplicated bimester
+    // label so printed activities use the same calendar as exams/report cards.
+    termId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Periodo',
+      default: null,
+      index: true,
+    },
+    academicYearId: {
+      type: Schema.Types.ObjectId,
+      ref: 'SchoolYear',
+      default: null,
+      index: true,
+    },
     teacherId: {
       type: Schema.Types.ObjectId,
       ref: 'User',
@@ -134,6 +149,8 @@ const activityPrintRunSchema = new Schema(
       bookTitle: { type: String, trim: true, default: '' },
       activityTitle: { type: String, trim: true, default: '' },
       pageNumber: { type: Number, min: 1, default: 1 },
+      termName: { type: String, trim: true, default: '' },
+      academicYear: { type: Number, default: null },
     },
     items: {
       type: [activityPrintRunItemSchema],
@@ -145,6 +162,7 @@ const activityPrintRunSchema = new Schema(
 
 activityPrintRunSchema.index({ schoolId: 1, createdAt: -1 });
 activityPrintRunSchema.index({ activityPageId: 1, schoolId: 1, createdAt: -1 });
+activityPrintRunSchema.index({ schoolId: 1, teacherId: 1, classId: 1, termId: 1, printDate: -1 });
 activityPrintRunSchema.index({ 'items.qrCodePayload': 1 });
 
 module.exports = mongoose.model('ActivityPrintRun', activityPrintRunSchema);

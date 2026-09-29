@@ -19,6 +19,7 @@
     "guardian:eligibility-report": "node src/scripts/reportGuardianAccessEligibility.js",
     "guardian:audit-indexes": "node src/scripts/migrateGuardianAuditIndexes.js",
     "classes:fix-indexes": "node src/scripts/fixClassIndexes.js",
+    "activity-prints:backfill-terms": "node src/scripts/backfillActivityPrintRunAcademicTerms.js",
     "gmail:bootstrap": "node src/scripts/bootstrapGmailOAuth.js",
     "gmail:validate": "node src/scripts/validateGmailProvider.js",
     "gmail:test-send": "node src/scripts/sendControlledGmailTest.js",

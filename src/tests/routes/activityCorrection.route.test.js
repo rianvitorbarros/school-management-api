@@ -230,3 +230,38 @@ test('GET /students/:studentId/activity-corrections returns student corrections'
     auth.restore();
   }
 });
+
+test('GET /activity-corrections/print-runs forwards academic filters', async () => {
+  const auth = createSchoolAuthHarness();
+  let capturedInput = null;
+
+  const restore = patchMethods([
+    {
+      target: activityCorrectionService,
+      key: 'listPrintRunsForCorrection',
+      value: async (input) => {
+        capturedInput = input;
+        return { items: [], total: 0 };
+      },
+    },
+  ]);
+
+  try {
+    await withServer(async (baseUrl) => {
+      const classId = String(new mongoose.Types.ObjectId());
+      const termId = String(new mongoose.Types.ObjectId());
+      const response = await fetch(
+        `${baseUrl}/api/school/activity-corrections/print-runs?classId=${classId}&termId=${termId}`,
+        { headers: { Authorization: `Bearer ${auth.token}` } }
+      );
+
+      assert.equal(response.status, 200);
+      assert.equal(capturedInput.schoolId, auth.schoolId);
+      assert.equal(capturedInput.filters.classId, classId);
+      assert.equal(capturedInput.filters.termId, termId);
+    });
+  } finally {
+    restore();
+    auth.restore();
+  }
+});

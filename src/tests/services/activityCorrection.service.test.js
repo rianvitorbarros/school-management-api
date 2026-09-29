@@ -96,6 +96,7 @@ function createHarness(overrides = {}) {
   const actorId = new mongoose.Types.ObjectId();
   const pageId = new mongoose.Types.ObjectId();
   const bookId = new mongoose.Types.ObjectId();
+  const termId = new mongoose.Types.ObjectId();
   const printRunId = new mongoose.Types.ObjectId();
   const correctionId = new mongoose.Types.ObjectId();
 
@@ -118,9 +119,11 @@ function createHarness(overrides = {}) {
     schoolId,
     classId,
     teacherId,
+    termId,
     activityPageId: pageId,
     bookId,
     printDate: new Date('2026-06-08T12:00:00.000Z'),
+    status: 'generated',
     snapshot: {
       schoolName: 'Escola Teste',
       className: '1 B',
@@ -287,6 +290,7 @@ function createHarness(overrides = {}) {
       teacherId: String(teacherId),
       pageId: String(pageId),
       bookId: String(bookId),
+      termId: String(termId),
       printRunId: String(printRunId),
       correctionId: String(correctionId),
     },
@@ -549,6 +553,62 @@ test('listCorrections filters by classId', async () => {
 
   assert.equal(result.total, 1);
   assert.equal(result.items[0].classId, harness.ids.classId);
+});
+
+test('listPrintRunsForCorrection keeps pending and corrected sheets in one activity run', async () => {
+  const harness = createHarness();
+  harness.state.corrections = [
+    {
+      _id: new mongoose.Types.ObjectId(),
+      schoolId: new mongoose.Types.ObjectId(harness.ids.schoolId),
+      classId: new mongoose.Types.ObjectId(harness.ids.classId),
+      studentId: new mongoose.Types.ObjectId(harness.ids.studentId),
+      teacherId: new mongoose.Types.ObjectId(harness.ids.teacherId),
+      correctedByUserId: new mongoose.Types.ObjectId(),
+      activityPrintRunId: new mongoose.Types.ObjectId(harness.ids.printRunId),
+      qrCodePayload: 'AH-ACTIVITY-1:uuid-1',
+      activityPageId: new mongoose.Types.ObjectId(harness.ids.pageId),
+      activityBookId: new mongoose.Types.ObjectId(harness.ids.bookId),
+      status: 'corrected',
+      correctedAt: new Date('2026-06-09T12:00:00.000Z'),
+    },
+  ];
+
+  const result = await harness.service.listPrintRunsForCorrection({
+    schoolId: harness.ids.schoolId,
+    actor: { ...harness.actors.teacher, id: harness.ids.teacherId },
+    filters: {
+      classId: harness.ids.classId,
+      termId: harness.ids.termId,
+    },
+  });
+
+  assert.equal(result.total, 1);
+  assert.equal(result.items[0].totalStudents, 2);
+  assert.equal(result.items[0].pendingCount, 1);
+  assert.equal(result.items[0].correctedCount, 1);
+  assert.equal(result.items[0].students[0].status, 'corrected');
+  assert.equal(result.items[0].students[1].status, 'pending');
+});
+
+test('listPrintRunsForCorrection does not cross academic terms or teachers', async () => {
+  const harness = createHarness();
+
+  const anotherTerm = String(new mongoose.Types.ObjectId());
+  const otherTermResult = await harness.service.listPrintRunsForCorrection({
+    schoolId: harness.ids.schoolId,
+    actor: { ...harness.actors.teacher, id: harness.ids.teacherId },
+    filters: { classId: harness.ids.classId, termId: anotherTerm },
+  });
+  assert.equal(otherTermResult.total, 0);
+
+  const anotherTeacher = String(new mongoose.Types.ObjectId());
+  const otherTeacherResult = await harness.service.listPrintRunsForCorrection({
+    schoolId: harness.ids.schoolId,
+    actor: { ...harness.actors.teacher, id: anotherTeacher },
+    filters: { classId: harness.ids.classId, termId: harness.ids.termId },
+  });
+  assert.equal(otherTeacherResult.total, 0);
 });
 
 test('listStudentCorrections returns only corrections for the requested student', async () => {

@@ -324,6 +324,14 @@ function registerAppListeners() {
         });
     });
 
+    appEmitter.on('activity:correction-updated', (payload) => {
+        console.log('Evento: activity:correction-updated');
+        broadcast(
+            { type: 'activity:correction-updated', payload },
+            payload.schoolId || payload.school_id
+        );
+    });
+
     ['re_enrollment:created', 're_enrollment:approved', 're_enrollment:rejected'].forEach((eventName) => {
         appEmitter.on(eventName, (payload) => {
             broadcast({ type: eventName, payload }, payload.schoolId || payload.school_id);
@@ -359,6 +367,7 @@ function broadcast(data, targetSchoolId) {
         String(data.type || '').startsWith('official_document_') ||
         String(data.type || '').startsWith('absence_justification_') ||
         data.type === 'exam:sheet-corrected' ||
+        data.type === 'activity:correction-updated' ||
         data.type === 'REPORT_CARD_EXAM_IMPORTED' ||
         data.type === 'REPORT_CARD_UPDATED'
     ) {

@@ -88,6 +88,23 @@ function createHarness(overrides = {}) {
     _id: classId,
     name: '3 B',
     school_id: schoolId,
+    schoolYear: 2026,
+  };
+
+  const schoolYear = {
+    _id: new mongoose.Types.ObjectId(),
+    school_id: schoolId,
+    year: 2026,
+  };
+
+  const term = {
+    _id: new mongoose.Types.ObjectId(),
+    school_id: schoolId,
+    anoLetivoId: schoolYear._id,
+    titulo: '2º Bimestre',
+    tipo: 'Letivo',
+    dataInicio: new Date('2026-04-01T00:00:00.000Z'),
+    dataFim: new Date('2026-06-30T23:59:59.999Z'),
   };
 
   const teacher = {
@@ -148,6 +165,21 @@ function createHarness(overrides = {}) {
         };
       },
     },
+    SchoolYearModel: {
+      findOne(filter = {}) {
+        const matches = sameId(filter.school_id, schoolId) && Number(filter.year) === 2026;
+        return createQuery(matches ? { ...schoolYear } : null);
+      },
+    },
+    PeriodoModel: {
+      findOne(filter = {}) {
+        const matchesSchool = sameId(filter.school_id, schoolId);
+        const matchesYear = sameId(filter.anoLetivoId, schoolYear._id);
+        const matchesType = filter.tipo === 'Letivo';
+        const matchesRequested = !filter._id || sameId(filter._id, term._id);
+        return createQuery(matchesSchool && matchesYear && matchesType && matchesRequested ? { ...term } : null);
+      },
+    },
     SchoolModel: {
       findById(id) {
         return createQuery(sameId(id, schoolId) ? { ...school, ...overrides.school } : null);
@@ -197,6 +229,8 @@ function createHarness(overrides = {}) {
       pageId: String(pageId),
       classId: String(classId),
       teacherId: String(teacherId),
+      termId: String(term._id),
+      schoolYearId: String(schoolYear._id),
       studentA: String(studentA),
       studentB: String(studentB),
     },
@@ -224,6 +258,8 @@ test('createPrintRun generates one opaque QR per student and saves PDF to R2', a
   assert.equal(harness.state.saveHistory[0].status, 'pending');
   assert.equal(harness.state.savedRuns[0].status, 'generated');
   assert.equal(harness.state.savedRuns[0].items.length, 2);
+  assert.equal(String(harness.state.savedRuns[0].termId), harness.ids.termId);
+  assert.equal(String(harness.state.savedRuns[0].academicYearId), harness.ids.schoolYearId);
   assert.equal(harness.state.savedRuns[0].items[0].qrCodePayload.startsWith('AH-ACTIVITY-1:'), true);
   assert.notEqual(
     harness.state.savedRuns[0].items[0].qrCodePayload,
