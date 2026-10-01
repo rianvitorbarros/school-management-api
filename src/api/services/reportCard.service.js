@@ -1113,6 +1113,10 @@ class ReportCardService {
       throw this._createError('reportCardId e schoolId são obrigatórios.', 400);
     }
 
+    if (!mongoose.Types.ObjectId.isValid(reportCardId)) {
+      throw this._createError('Identificador de boletim invalido.', 400);
+    }
+
     const reportCard = await ReportCard.findOne({
       _id: reportCardId,
       school_id: schoolId,

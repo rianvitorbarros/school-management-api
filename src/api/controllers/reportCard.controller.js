@@ -260,11 +260,18 @@ class ReportCardController {
         data: result,
       });
     } catch (error) {
-      console.error('[ReportCardController.recalculateReportCardStatus] Erro:', error);
+      console.error('[ReportCardController.recalculateReportCardStatus] Falhou', {
+        requestId: req.headers['x-request-id'] || crypto.randomUUID(),
+        userId: req.user?.id || null,
+        schoolId,
+        reportCardId,
+        status: error.statusCode || 500,
+        errorType: error.name,
+        message: error.message,
+      });
       return res.status(error.statusCode || 500).json({
         success: false,
         message: error.message || 'Erro interno ao recalcular o status do boletim.',
-        details: error.toString()
       });
     }
   }

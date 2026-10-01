@@ -312,3 +312,62 @@ test('subjectId inexistente no boletim retorna erro', async () => {
     (error) => error.statusCode === 404
   );
 });
+
+test('recalculo consolidado e idempotente e nao cria historico de nota', async () => {
+  const schoolId = makeId();
+  const teacherId = makeId();
+  const reportCard = makeReportCard({ schoolId, teacherId });
+  let saves = 0;
+  reportCard.subjects[0].score = 8;
+  reportCard.save = async function save() {
+    saves += 1;
+    return this;
+  };
+
+  const recalculate = () => reportCardService.recalculateReportCardStatus({
+    schoolId,
+    reportCardId: reportCard._id,
+    actor: actor({ id: teacherId, schoolId, roles: ['Professor'] }),
+  });
+
+  await withMockedReportCardFindOne(reportCard, async () => {
+    const first = await recalculate();
+    const second = await recalculate();
+    assert.equal(first.status, second.status);
+  });
+
+  assert.equal(saves, 2);
+  assert.equal(reportCard.subjects[0].scoreHistory.length, 0);
+});
+
+test('identificador de boletim invalido retorna 400, nunca erro de autenticacao', async () => {
+  const schoolId = makeId();
+  const teacherId = makeId();
+
+  await assert.rejects(
+    () => reportCardService.recalculateReportCardStatus({
+      schoolId,
+      reportCardId: 'isaac-report-card-id-invalido',
+      actor: actor({ id: teacherId, schoolId, roles: ['Professor'] }),
+    }),
+    (error) => error.statusCode === 400 && /Identificador de boletim/.test(error.message)
+  );
+});
+
+test('recalculo nao depende de buscar o aluno e aceita o contexto legado do boletim', async () => {
+  const schoolId = makeId();
+  const teacherId = makeId();
+  const reportCard = makeReportCard({ schoolId, teacherId, studentId: makeId() });
+  reportCard.studentId = 'referencia-legada-do-aluno';
+
+  const result = await withMockedReportCardFindOne(reportCard, () =>
+    reportCardService.recalculateReportCardStatus({
+      schoolId,
+      reportCardId: reportCard._id,
+      actor: actor({ id: teacherId, schoolId, roles: ['Professor'] }),
+    })
+  );
+
+  assert.equal(result, reportCard);
+  assert.equal(result.saved, true);
+});
