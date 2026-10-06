@@ -1,6 +1,13 @@
 const AcademicMonthlyFeePlan = require('../models/academicMonthlyFeePlan.model');
 const Class = require('../models/class.model');
 const AuditLog = require('../models/auditLog.model');
+const academicClassVisibilityFilter = {
+  $or: [
+    { status: { $in: ['Planejada', 'Ativa'] } },
+    { status: { $exists: false } },
+    { status: null },
+  ],
+};
 
 const keyOf = (item) => `${item.level}::${item.grade}::${item.shift}`;
 const toCents = (value) => {
@@ -28,11 +35,11 @@ class AcademicMonthlyFeePlanService {
     const year = Number(academicYear);
     if (!Number.isInteger(year)) throw Object.assign(new Error('Ano letivo inválido.'), { statusCode: 400, code: 'INVALID_ACADEMIC_YEAR' });
     const [classes, priorClasses, plans] = await Promise.all([
-      Class.find({ school_id: schoolId, schoolYear: year, status: { $in: ['Planejada', 'Ativa'] } }).lean(),
+      Class.find({ school_id: schoolId, schoolYear: year, ...academicClassVisibilityFilter }).lean(),
       // School years are not guaranteed to be consecutive in legacy data.
       // Select the latest available earlier class per academic key instead of
       // assuming `target year - 1` always exists.
-      Class.find({ school_id: schoolId, schoolYear: { $lt: year }, status: { $in: ['Planejada', 'Ativa'] } }).sort({ schoolYear: -1 }).lean(),
+      Class.find({ school_id: schoolId, schoolYear: { $lt: year }, ...academicClassVisibilityFilter }).sort({ schoolYear: -1 }).lean(),
       AcademicMonthlyFeePlan.find({ school_id: schoolId, academicYear: year }).lean(),
     ]);
     const planByKey = new Map(plans.map((plan) => [keyOf(plan), plan]));
