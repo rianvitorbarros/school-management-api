@@ -1,0 +1,10 @@
+const router = require('express').Router();
+const controller = require('../controllers/academicMonthlyFeePlan.controller');
+const { verifyToken } = require('../middlewares/auth.middleware');
+router.use('/academic-monthly-fee-plans', verifyToken);
+router.get('/academic-monthly-fee-plans', controller.overview);
+router.post('/academic-monthly-fee-plans/draft', controller.saveDraft);
+router.post('/academic-monthly-fee-plans/bulk-adjust', controller.bulkAdjust);
+router.post('/academic-monthly-fee-plans/publish', controller.publish);
+router.get('/academic-monthly-fee-plans/published', controller.published);
+module.exports = router;

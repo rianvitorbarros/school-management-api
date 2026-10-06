@@ -8,6 +8,7 @@ const Student = require('../models/student.model');
 const Enrollment = require('../models/enrollment.model');
 const Class = require('../models/class.model');
 const Invoice = require('../models/invoice.model');
+const academicMonthlyFeePlanService = require('./academicMonthlyFeePlan.service');
 
 function httpError(message, statusCode = 400, code = null) {
   const error = new Error(message);
@@ -91,6 +92,11 @@ class ReEnrollmentService {
     const targetKeys = new Set(targetClasses.map((item) => `${item.level}::${item.grade}`));
     const progressionsWithoutTargetClass = progressions.filter((item) => item.progressionType !== 'TERMINAL' && !targetKeys.has(`${item.level}::${item.toGrade}`)).map((item) => ({ level: item.level, grade: item.toGrade }));
     if (progressionsWithoutTargetClass.length) issues.push({ code: 'NO_TARGET_CLASS', severity: 'warning', message: `${progressionsWithoutTargetClass.length} progressão(ões) ainda não possui(em) turma de destino.`, rules: progressionsWithoutTargetClass });
+    const publishedPlans = await require('../models/academicMonthlyFeePlan.model').find({ school_id: schoolId, academicYear: period.academicYearTo, publishedCents: { $ne: null } }).select('level grade shift').lean();
+    const publishedKeys = new Set(publishedPlans.map((item) => `${item.level}::${item.grade}::${item.shift}`));
+    const missingPrices = targetClasses.filter((item) => !publishedKeys.has(`${item.level}::${item.grade}::${item.shift}`)).map((item) => ({ level: item.level, grade: item.grade, shift: item.shift }));
+    const distinctMissingPrices = [...new Map(missingPrices.map((item) => [`${item.level}::${item.grade}::${item.shift}`, item])).values()];
+    if (distinctMissingPrices.length) issues.push({ code: 'MISSING_PUBLISHED_MONTHLY_FEE', message: `${distinctMissingPrices.length} configuração(ões) de mensalidade de destino ainda não foi(foram) publicada(s).`, rules: distinctMissingPrices });
     return { periodConfigured: true, period, academicYearFrom: period.academicYearFrom, academicYearTo: period.academicYearTo, progression: { total: progressions.length, missing, missingRules: [...missingRules.values()] }, students: { active: enrollments.length, eligibleForProgression: eligible, missingProgression: enrollments.length - eligible - missingClass, missingClass }, targetClasses: { available: targetClasses.length, progressionsWithoutTargetClass: progressionsWithoutTargetClass.length }, ready: !issues.some((item) => item.severity !== 'warning'), issues };
   }
 
@@ -123,13 +129,15 @@ class ReEnrollmentService {
     const targetClass = await Class.findOne({ school_id: schoolId, schoolYear: period.academicYearTo, level: currentClass.level, grade: progression.toGrade, status: { $in: ['Planejada', 'Ativa'] }, shift: currentClass.shift }).sort({ name: 1 }).lean()
       || await Class.findOne({ school_id: schoolId, schoolYear: period.academicYearTo, level: currentClass.level, grade: progression.toGrade, status: { $in: ['Planejada', 'Ativa'] } }).sort({ shift: 1, name: 1 }).lean();
     const request = await ReEnrollmentRequest.findOne({ school_id: schoolId, studentId, academicYearTo: period.academicYearTo }).sort({ updatedAt: -1 }).lean();
+    const pricing = await academicMonthlyFeePlanService.publishedForDestination(schoolId, period.academicYearTo, { level: currentClass.level, grade: progression.toGrade, shift: targetClass?.shift || currentClass.shift });
     if (request?.status === 'PENDING') return { student, guardian, period, eligibility: 'ALREADY_REQUESTED', currentEnrollment: enrollment, currentClass, suggestedNextGrade: { level: currentClass.level, grade: progression.toGrade }, suggestedNextClass: targetClass, request };
     if (request?.status === 'APPROVED' || request?.status === 'REJECTED') return { student, guardian, period, eligibility: request.status, currentEnrollment: enrollment, currentClass, suggestedNextGrade: { level: currentClass.level, grade: progression.toGrade }, suggestedNextClass: targetClass, request };
+    if (!pricing) return { student, guardian, period, eligibility: 'NO_PUBLISHED_MONTHLY_FEE', currentEnrollment: enrollment, currentClass, suggestedNextGrade: { level: currentClass.level, grade: progression.toGrade }, suggestedNextClass: targetClass, request: null };
     const finance = await this._financialState(schoolId, studentId);
-    return { student, guardian, period, eligibility: finance.blocked ? 'FINANCIAL_BLOCK' : 'ELIGIBLE', currentEnrollment: enrollment, currentClass, suggestedNextGrade: { level: currentClass.level, grade: progression.toGrade }, suggestedNextClass: targetClass, request: null, financial: finance };
+    return { student, guardian, period, eligibility: finance.blocked ? 'FINANCIAL_BLOCK' : 'ELIGIBLE', currentEnrollment: enrollment, currentClass, suggestedNextGrade: { level: currentClass.level, grade: progression.toGrade }, suggestedNextClass: targetClass, request: null, financial: finance, pricing };
   }
   _serializeEligibility(item) {
-    return { student: { id: idOf(item.student), fullName: item.student?.fullName || '' }, currentEnrollment: item.currentEnrollment ? { id: idOf(item.currentEnrollment), academicYear: item.currentEnrollment.academicYear, status: item.currentEnrollment.status, class: classSnapshot(item.currentClass) } : null, targetAcademicYear: item.period.academicYearTo, suggestedNextGrade: item.suggestedNextGrade, suggestedNextClass: classSnapshot(item.suggestedNextClass), eligibility: item.eligibility, request: item.request || null };
+    return { student: { id: idOf(item.student), fullName: item.student?.fullName || '' }, currentEnrollment: item.currentEnrollment ? { id: idOf(item.currentEnrollment), academicYear: item.currentEnrollment.academicYear, status: item.currentEnrollment.status, class: classSnapshot(item.currentClass) } : null, targetAcademicYear: item.period.academicYearTo, suggestedNextGrade: item.suggestedNextGrade, suggestedNextClass: classSnapshot(item.suggestedNextClass), publishedMonthlyFee: item.pricing?.value || null, pricingVersionId: item.pricing?.versionId || null, eligibility: item.eligibility, request: item.request || null };
   }
   async getGuardianEligibility({ schoolId, accountId, tutorId }) {
     const period = await this._openPeriod(schoolId);
@@ -148,7 +156,7 @@ class ReEnrollmentService {
     if (eligibility.eligibility !== 'ELIGIBLE') throw httpError('Este aluno não está elegível para rematrícula.', 409, eligibility.eligibility);
     const finance = eligibility.financial || { blocked: false, count: 0 };
     try {
-      const request = await new ReEnrollmentRequest({ school_id: schoolId, studentId, studentNameSnapshot: eligibility.student.fullName || '', guardianId: tutorId, guardianNameSnapshot: eligibility.guardian.fullName || '', currentEnrollmentId: eligibility.currentEnrollment._id, academicYearFrom: period.academicYearFrom, academicYearTo: period.academicYearTo, currentClassId: eligibility.currentClass._id, currentClassSnapshot: classSnapshot(eligibility.currentClass), targetGradeName: eligibility.suggestedNextGrade.grade, targetLevelName: eligibility.suggestedNextGrade.level, targetClassId: eligibility.suggestedNextClass?._id || null, targetClassSnapshot: classSnapshot(eligibility.suggestedNextClass), periodId: period._id, financialStatusAtRequest: finance.blocked ? 'OVERDUE' : 'CLEAR', financialOverdueCountAtRequest: finance.count }).save();
+      const request = await new ReEnrollmentRequest({ school_id: schoolId, studentId, studentNameSnapshot: eligibility.student.fullName || '', guardianId: tutorId, guardianNameSnapshot: eligibility.guardian.fullName || '', currentEnrollmentId: eligibility.currentEnrollment._id, academicYearFrom: period.academicYearFrom, academicYearTo: period.academicYearTo, currentClassId: eligibility.currentClass._id, currentClassSnapshot: classSnapshot(eligibility.currentClass), targetGradeName: eligibility.suggestedNextGrade.grade, targetLevelName: eligibility.suggestedNextGrade.level, targetClassId: eligibility.suggestedNextClass?._id || null, targetClassSnapshot: classSnapshot(eligibility.suggestedNextClass), periodId: period._id, financialStatusAtRequest: finance.blocked ? 'OVERDUE' : 'CLEAR', financialOverdueCountAtRequest: finance.count, monthlyFeeSnapshotCents: Math.round(eligibility.pricing.value * 100), pricingAcademicYear: period.academicYearTo, pricingVersionId: eligibility.pricing.versionId }).save();
       return { request, created: true };
     } catch (error) {
       if (error?.code !== 11000) throw error;
