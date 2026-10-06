@@ -1494,6 +1494,73 @@ test('the new PIN authenticates after guardian PIN recovery', async () => {
   assert.ok(login.token);
 });
 
+test('PIN recovery provisions an account for a financial guardian who has not used first access', async () => {
+  const seed = createBaseSeed();
+  // Financial guardians are eligible even when older student records do not
+  // duplicate that relationship in tutors[].
+  seed.students[0].tutors = [];
+  seed.accounts = [];
+  const harness = createHarness(seed);
+
+  const started = await startValidRecovery(harness.service, {
+    cpf: '123.456.789-09',
+  });
+
+  await harness.service.completePinRecovery({
+    challengeId: started.challengeId,
+    verificationToken: started.verificationToken,
+    newPin: '012345',
+  });
+
+  assert.equal(harness.state.accounts.length, 1);
+  assert.equal(harness.state.accounts[0].identifierNormalized, '12345678909');
+  assert.equal(harness.state.accounts[0].pinHash.includes('012345'), false);
+  assert.equal(
+    await bcrypt.compare('012345', harness.state.accounts[0].pinHash),
+    true
+  );
+
+  const login = await harness.service.login({
+    schoolPublicId: 'escola-a',
+    identifier: '123.456.789-09',
+    pin: '012345',
+  });
+  assert.ok(login.token);
+  assert.equal(login.linkedStudents.length, 1);
+  assert.equal(login.linkedStudents[0].id, 'student-1');
+});
+
+test('PIN recovery repairs a legacy formatted account identifier before login', async () => {
+  const seed = await createRecoverySeed({ pin: '246810' });
+  seed.accounts[0].identifierNormalized = '123.456.789-09';
+  const harness = createHarness(seed);
+
+  await assert.rejects(
+    () =>
+      harness.service.login({
+        schoolPublicId: 'escola-a',
+        identifier: '12345678909',
+        pin: '246810',
+      }),
+    (error) => error.statusCode === 401
+  );
+
+  const started = await startValidRecovery(harness.service);
+  await harness.service.completePinRecovery({
+    challengeId: started.challengeId,
+    verificationToken: started.verificationToken,
+    newPin: '654321',
+  });
+
+  assert.equal(harness.state.accounts[0].identifierNormalized, '12345678909');
+  const login = await harness.service.login({
+    schoolPublicId: 'escola-a',
+    identifier: '123.456.789-09',
+    pin: '654321',
+  });
+  assert.ok(login.token);
+});
+
 test('guardian PIN recovery increments tokenVersion', async () => {
   const harness = createHarness(await createRecoverySeed());
   const account = harness.state.accounts[0];

@@ -2654,20 +2654,37 @@ class GuardianAuthService {
           continue;
         }
 
-        const account =
-          await this.GuardianAccessAccountModel.findOne({
-            school_id: schoolId,
-            tutorId: tutor._id,
-            identifierNormalized: cpfNormalized,
-          }).select('+pinHash');
+        // A guardian may be correctly registered on the student (including as
+        // the financial guardian) before having ever created an app account.
+        // It may also have an account created before CPF normalization was
+        // introduced.  Recovery must validate the relationship first, then
+        // reconcile the account by tutorId instead of treating either legacy
+        // case as an invalid identity.
+        const accounts = await this._findGuardianAccounts({
+          school_id: schoolId,
+          $or: [
+            { tutorId: tutor._id },
+            { identifierNormalized: cpfNormalized },
+          ],
+        });
+        const accountForTutor = accounts.find(
+          (item) => String(item.tutorId) === String(tutor._id)
+        );
+        const conflictingAccount = accounts.find(
+          (item) => String(item.tutorId) !== String(tutor._id)
+        );
 
-        if (!account || account.status === 'inactive') continue;
+        // The same CPF cannot safely identify two guardians at one school.
+        // Keep the public response non-enumerable by excluding this match.
+        if (conflictingAccount || accountForTutor?.status === 'inactive') {
+          continue;
+        }
 
         matches.push({
           schoolId: String(schoolId),
           student,
           tutor,
-          account,
+          account: accountForTutor || null,
           relationship:
             relationshipByTutorId.get(String(tutor._id)) || 'Responsavel',
         });
@@ -2675,6 +2692,86 @@ class GuardianAuthService {
     }
 
     return matches;
+  }
+
+  async _resolveGuardianAccountForPinRecovery({
+    schoolId,
+    tutor,
+    session = null,
+  }) {
+    const identifierNormalized = this._getEffectiveTutorCpfNormalized(tutor);
+    if (!schoolId || !tutor?._id || !identifierNormalized) {
+      throw this._createHttpError(PIN_RECOVERY_GENERIC_MESSAGE, 409, {
+        reason: 'pin_recovery_scope_changed',
+      });
+    }
+
+    let accountQuery = this.GuardianAccessAccountModel.findOne({
+      school_id: schoolId,
+      tutorId: tutor._id,
+    }).select('+pinHash');
+    accountQuery = this._withSession(accountQuery, session);
+    let account = await accountQuery;
+
+    let conflictingAccountQuery = this.GuardianAccessAccountModel.findOne({
+      school_id: schoolId,
+      identifierNormalized,
+      ...(account ? { _id: { $ne: account._id } } : {}),
+    }).select('_id tutorId');
+    conflictingAccountQuery = this._withSession(
+      conflictingAccountQuery,
+      session
+    );
+    const conflictingAccount = await conflictingAccountQuery;
+
+    if (
+      conflictingAccount &&
+      String(conflictingAccount.tutorId) !== String(tutor._id)
+    ) {
+      throw this._createHttpError(PIN_RECOVERY_GENERIC_MESSAGE, 409, {
+        reason: 'pin_recovery_scope_changed',
+      });
+    }
+
+    if (!account && conflictingAccount) {
+      accountQuery = this.GuardianAccessAccountModel.findOne({
+        _id: conflictingAccount._id,
+        school_id: schoolId,
+        tutorId: tutor._id,
+      }).select('+pinHash');
+      accountQuery = this._withSession(accountQuery, session);
+      account = await accountQuery;
+    }
+
+    if (account) return account;
+
+    const now = this._getNow();
+    const payload = {
+      school_id: schoolId,
+      tutorId: tutor._id,
+      identifierType: 'cpf',
+      identifierNormalized,
+      identifierMasked: maskCpf(identifierNormalized),
+      pinHash: null,
+      status: 'pending',
+      activatedAt: null,
+      pinUpdatedAt: null,
+      failedLoginCount: 0,
+      lastFailedAt: null,
+      blockedUntil: null,
+      tokenVersion: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    if (session) {
+      const created = await this.GuardianAccessAccountModel.create([payload], {
+        session,
+      });
+      return created[0];
+    }
+
+    return this.GuardianAccessAccountModel.create(payload);
   }
 
   async _failPinRecoveryStart(challenge, reason) {
@@ -2791,8 +2888,8 @@ class GuardianAuthService {
     const [match] = matches;
     const verificationToken = this._randomToken();
 
-    challenge.school_id = match.account.school_id;
-    challenge.guardianAccessAccountId = match.account._id;
+    challenge.school_id = match.schoolId;
+    challenge.guardianAccessAccountId = match.account?._id || null;
     challenge.studentId = match.student._id;
     challenge.tutorId = match.tutor._id;
     challenge.verificationTokenHash = this._hashValue(verificationToken);
@@ -2801,8 +2898,8 @@ class GuardianAuthService {
     await challenge.save();
 
     await this._registerEventBestEffort('pin-recovery.started.event-failed', {
-      schoolId: match.account.school_id,
-      accountId: match.account._id,
+      schoolId: match.schoolId,
+      accountId: match.account?._id || null,
       recoveryChallengeId: challenge._id,
       studentId: match.student._id,
       tutorId: match.tutor._id,
@@ -2993,61 +3090,63 @@ class GuardianAuthService {
 
     try {
       return await this._runCriticalMutation(async (session) => {
-        let accountQuery = this.GuardianAccessAccountModel.findOne({
-          _id: claimedChallenge.guardianAccessAccountId,
-          school_id: claimedChallenge.school_id,
-          tutorId: claimedChallenge.tutorId,
-        }).select('+pinHash');
-        accountQuery = this._withSession(accountQuery, session);
-        const account = await accountQuery;
-
         let tutorQuery = this.TutorModel.findOne({
-        _id: claimedChallenge.tutorId,
-        school_id: claimedChallenge.school_id,
-      })
-        .select('_id cpf cpfNormalized school_id')
-        .lean();
+          _id: claimedChallenge.tutorId,
+          school_id: claimedChallenge.school_id,
+        })
+          .select('_id cpf cpfNormalized school_id')
+          .lean();
         tutorQuery = this._withSession(tutorQuery, session);
         const tutor = await tutorQuery;
 
         let studentQuery = this.StudentModel.findOne({
-        _id: claimedChallenge.studentId,
-        school_id: claimedChallenge.school_id,
-        isActive: true,
-        $or: [
-          { financialTutorId: claimedChallenge.tutorId },
-          { 'tutors.tutorId': claimedChallenge.tutorId },
-        ],
-      })
-        .select('_id school_id')
-        .lean();
+          _id: claimedChallenge.studentId,
+          school_id: claimedChallenge.school_id,
+          isActive: true,
+          $or: [
+            { financialTutorId: claimedChallenge.tutorId },
+            { 'tutors.tutorId': claimedChallenge.tutorId },
+          ],
+        })
+          .select('_id school_id financialTutorId tutors')
+          .lean();
         studentQuery = this._withSession(studentQuery, session);
         const student = await studentQuery;
 
-      const accountCpfHash = account?.identifierNormalized
-        ? this._hashSensitiveValue(account.identifierNormalized)
-        : null;
-      const tutorCpf = tutor
-        ? this._getEffectiveTutorCpfNormalized(tutor)
-        : null;
+        const tutorCpf = tutor
+          ? this._getEffectiveTutorCpfNormalized(tutor)
+          : null;
+        const tutorCpfHash = tutorCpf
+          ? this._hashSensitiveValue(tutorCpf)
+          : null;
 
-      if (
-        !account ||
-        !tutor ||
-        !student ||
-        account.status === 'inactive' ||
-        tutorCpf !== account.identifierNormalized ||
-        accountCpfHash !== claimedChallenge.cpfHash
-      ) {
-        throw this._createHttpError(PIN_RECOVERY_GENERIC_MESSAGE, 409, {
-          reason: 'pin_recovery_scope_changed',
+        if (!tutor || !student || tutorCpfHash !== claimedChallenge.cpfHash) {
+          throw this._createHttpError(PIN_RECOVERY_GENERIC_MESSAGE, 409, {
+            reason: 'pin_recovery_scope_changed',
+          });
+        }
+
+        const account = await this._resolveGuardianAccountForPinRecovery({
+          schoolId: claimedChallenge.school_id,
+          tutor,
+          session,
         });
-      }
+
+        if (account.status === 'inactive') {
+          throw this._createHttpError(PIN_RECOVERY_GENERIC_MESSAGE, 409, {
+            reason: 'pin_recovery_scope_changed',
+          });
+        }
 
         const tokenVersionBefore = Number(account.tokenVersion || 0);
         const tokenVersionAfter = tokenVersionBefore + 1;
         const auditContext = this._auditContextFromChallenge(claimedChallenge);
 
+        // Canonicalize legacy account identifiers only after the recovery
+        // challenge has proved the tutor CPF and student relationship.
+        account.identifierType = 'cpf';
+        account.identifierNormalized = tutorCpf;
+        account.identifierMasked = maskCpf(tutorCpf);
         account.pinHash = await this.bcrypt.hash(
           String(newPin),
           PIN_SALT_ROUNDS
@@ -3061,6 +3160,19 @@ class GuardianAuthService {
         account.tokenVersion = tokenVersionAfter;
         await this._saveDocument(account, session);
 
+        const relationshipSnapshot =
+          this._buildTutorRelationshipMap(student).get(String(tutor._id)) ||
+          'Responsavel';
+        const link = await this._upsertGuardianStudentLink({
+          schoolId: claimedChallenge.school_id,
+          accountId: account._id,
+          studentId: student._id,
+          tutorId: tutor._id,
+          relationshipSnapshot,
+          source: 'pin_recovery',
+          session,
+        });
+
         claimedChallenge.stage = 'completed';
         claimedChallenge.completedAt = now;
         claimedChallenge.verificationTokenHash = null;
@@ -3069,6 +3181,7 @@ class GuardianAuthService {
         const commonEvent = {
           schoolId: account.school_id,
           accountId: account._id,
+          linkId: link?._id || null,
           recoveryChallengeId: claimedChallenge._id,
           studentId: claimedChallenge.studentId,
           tutorId: account.tutorId,
