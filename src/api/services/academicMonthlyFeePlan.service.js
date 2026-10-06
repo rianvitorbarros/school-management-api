@@ -29,17 +29,25 @@ class AcademicMonthlyFeePlanService {
     if (!Number.isInteger(year)) throw Object.assign(new Error('Ano letivo inválido.'), { statusCode: 400, code: 'INVALID_ACADEMIC_YEAR' });
     const [classes, priorClasses, plans] = await Promise.all([
       Class.find({ school_id: schoolId, schoolYear: year, status: { $in: ['Planejada', 'Ativa'] } }).lean(),
-      Class.find({ school_id: schoolId, schoolYear: year - 1, status: { $in: ['Planejada', 'Ativa'] } }).lean(),
+      // School years are not guaranteed to be consecutive in legacy data.
+      // Select the latest available earlier class per academic key instead of
+      // assuming `target year - 1` always exists.
+      Class.find({ school_id: schoolId, schoolYear: { $lt: year }, status: { $in: ['Planejada', 'Ativa'] } }).sort({ schoolYear: -1 }).lean(),
       AcademicMonthlyFeePlan.find({ school_id: schoolId, academicYear: year }).lean(),
     ]);
     const planByKey = new Map(plans.map((plan) => [keyOf(plan), plan]));
-    const currentByKey = new Map(priorClasses.map((item) => [keyOf(item), item]));
+    const currentByKey = new Map();
+    for (const item of priorClasses) {
+      if (!currentByKey.has(keyOf(item))) currentByKey.set(keyOf(item), item);
+    }
     // A first plan projects the current academic catalogue. When next-year
     // classes exist, they become the display catalogue while prices remain
     // shared by the academic key (not by the A/B class section).
     const displayClasses = classes.length ? classes : priorClasses;
     const rows = displayClasses.map((item) => {
       const plan = planByKey.get(keyOf(item));
+      // For the future catalogue, resolve the price from the latest currently
+      // active matching academic key. The future draft never replaces it.
       const current = classes.length ? currentByKey.get(keyOf(item)) : item;
       const currentValue = current ? money(Math.round(Number(current.monthlyFee || 0) * 100)) : null;
       const draftValue = plan ? money(plan.draftCents) : null;
@@ -50,7 +58,8 @@ class AcademicMonthlyFeePlanService {
     const configurations = [...new Map(rows.map((row) => [keyOf(row), row])).values()];
     const configured = configurations.filter((row) => row.draftValue !== null);
     const average = (items, field) => items.length ? Number((items.reduce((sum, row) => sum + Number(row[field] || 0), 0) / items.length).toFixed(2)) : null;
-    return { academicYear: year, currentAcademicYear: year - 1, rows, summary: { totalClasses: displayClasses.length, totalConfigurations: configurations.length, configured: configured.length, pending: configurations.length - configured.length, currentAverage: average(configurations.filter((row) => row.currentValue !== null), 'currentValue'), plannedAverage: average(configured, 'draftValue'), updatedAt: plans.map((item) => item.updatedAt).filter(Boolean).sort((a, b) => new Date(b) - new Date(a))[0] || null } };
+    const currentAcademicYear = priorClasses.length ? Math.max(...priorClasses.map((item) => Number(item.schoolYear))) : year - 1;
+    return { academicYear: year, currentAcademicYear, rows, summary: { totalClasses: displayClasses.length, totalConfigurations: configurations.length, configured: configured.length, pending: configurations.length - configured.length, currentAverage: average(configurations.filter((row) => row.currentValue !== null), 'currentValue'), plannedAverage: average(configured, 'draftValue'), updatedAt: plans.map((item) => item.updatedAt).filter(Boolean).sort((a, b) => new Date(b) - new Date(a))[0] || null } };
   }
 
   async saveDraft(schoolId, actorId, { academicYear, rows = [] }) {
