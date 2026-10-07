@@ -35,7 +35,7 @@ const guardianAccessLinkSchema = new Schema(
     },
     source: {
       type: String,
-      enum: ['first_access', 'sync', 'admin'],
+      enum: ['first_access', 'pin_recovery', 'sync', 'admin'],
       default: 'first_access',
     },
     status: {
