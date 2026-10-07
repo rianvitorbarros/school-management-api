@@ -3222,8 +3222,19 @@ class GuardianAuthService {
         };
       });
     } catch (error) {
-      claimedChallenge.stage = 'failed';
-      claimedChallenge.verificationTokenHash = null;
+      // A transaction capability error happens before the PIN, account links and
+      // audit trail can be committed.  Do not consume a verified recovery
+      // challenge in that case: doing so traps the guardian on the PIN screen
+      // with a token that the server will only report as already used.
+      //
+      // Other failures remain terminal. In particular, do not retry an unknown
+      // commit outcome or a scope/identity failure with the same token.
+      const canRetryCompletion =
+        error?.reason === 'guardian_audit_transaction_unavailable';
+      claimedChallenge.stage = canRetryCompletion ? 'awaiting_pin' : 'failed';
+      if (!canRetryCompletion) {
+        claimedChallenge.verificationTokenHash = null;
+      }
       await claimedChallenge.save();
 
       await this._registerEventBestEffort(
@@ -3236,7 +3247,10 @@ class GuardianAuthService {
           tutorId: claimedChallenge.tutorId,
           actorType: 'public',
           eventType: GUARDIAN_ACCESS_EVENT_TYPES.PIN_RECOVERY_FAILED,
-          metadata: { reason: error.reason || 'completion_failed' },
+          metadata: {
+            reason: error.reason || 'completion_failed',
+            retryable: canRetryCompletion,
+          },
           ...this._auditContextFromChallenge(claimedChallenge),
         }
       );

@@ -1632,6 +1632,55 @@ test('a completed guardian PIN recovery challenge cannot be replayed', async () 
   );
 });
 
+test('a recovery challenge remains usable when transaction support is temporarily unavailable', async () => {
+  const harness = createHarness(await createRecoverySeed({ pin: '246810' }));
+  const started = await startValidRecovery(harness.service);
+
+  harness.service.runCriticalTransaction = async () => {
+    throw new Error('Transaction numbers are only allowed on a replica set member');
+  };
+
+  await assert.rejects(
+    () =>
+      harness.service.completePinRecovery({
+        challengeId: started.challengeId,
+        verificationToken: started.verificationToken,
+        newPin: '654321',
+      }),
+    (error) =>
+      error.statusCode === 503 &&
+      error.reason === 'guardian_audit_transaction_unavailable'
+  );
+
+  const challenge = harness.state.recoveryChallenges.find(
+    (item) => item._id === started.challengeId
+  );
+  assert.equal(challenge.stage, 'awaiting_pin');
+  assert.ok(challenge.verificationTokenHash);
+  assert.equal(
+    await harness.service.bcrypt.compare(
+      '246810',
+      harness.state.accounts[0].pinHash
+    ),
+    true
+  );
+
+  harness.service.runCriticalTransaction = async (work) => work(null);
+  await harness.service.completePinRecovery({
+    challengeId: started.challengeId,
+    verificationToken: started.verificationToken,
+    newPin: '654321',
+  });
+
+  assert.equal(
+    await harness.service.bcrypt.compare(
+      '654321',
+      harness.state.accounts[0].pinHash
+    ),
+    true
+  );
+});
+
 test('an invalid guardian PIN recovery token cannot change the PIN', async () => {
   const harness = createHarness(await createRecoverySeed({ pin: '246810' }));
   const started = await startValidRecovery(harness.service);
