@@ -25,6 +25,7 @@ const reEnrollmentRequestSchema = new Schema({
   currentClassSnapshot: { type: classSnapshotSchema, required: true },
   targetGradeName: { type: String, required: true, trim: true },
   targetLevelName: { type: String, required: true, trim: true },
+  targetShiftName: { type: String, required: true, trim: true },
   targetClassId: { type: Schema.Types.ObjectId, ref: 'Class', default: null },
   targetClassSnapshot: { type: classSnapshotSchema, default: null },
   periodId: { type: Schema.Types.ObjectId, ref: 'ReEnrollmentPeriod', required: true },

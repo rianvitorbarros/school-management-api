@@ -6,6 +6,9 @@ const academicProgressionSchema = new mongoose.Schema({
   school_id: { type: mongoose.Schema.Types.ObjectId, ref: 'School', required: true, index: true },
   level: { type: String, required: true, trim: true },
   fromGrade: { type: String, required: true, trim: true },
+  // Usually the next grade stays in the same level. It is explicit for
+  // transitions such as 5º Ano (Fundamental I) -> 6º Ano (Fundamental II).
+  toLevel: { type: String, trim: true, default: null },
   // The Class model is the current academic catalogue in the regular flow;
   // its level/grade values are therefore the stable school-scoped keys here.
   toGrade: { type: String, trim: true, default: null },
@@ -18,6 +21,7 @@ academicProgressionSchema.pre('validate', function validateProgression(next) {
   const to = String(this.toGrade || '').trim();
   if (this.progressionType === 'TERMINAL') {
     this.toGrade = null;
+    this.toLevel = null;
     return next();
   }
   if (!to) return next(new Error('A próxima série é obrigatória para uma progressão interna.'));
