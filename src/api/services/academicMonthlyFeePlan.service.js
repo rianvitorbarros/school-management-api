@@ -44,11 +44,11 @@ class AcademicMonthlyFeePlanService {
     const year = Number(academicYear);
     if (!Number.isInteger(year)) throw Object.assign(new Error('Ano letivo inválido.'), { statusCode: 400, code: 'INVALID_ACADEMIC_YEAR' });
     const [classes, priorClasses, plans] = await Promise.all([
-      Class.find({ school_id: schoolId, schoolYear: year, ...academicClassVisibilityFilter }).lean(),
+      Class.find({ school_id: schoolId, schoolYear: year, ...academicClassVisibilityFilter }).select('+monthlyFee').lean(),
       // School years are not guaranteed to be consecutive in legacy data.
       // Select the latest available earlier class per academic key instead of
       // assuming `target year - 1` always exists.
-      Class.find({ school_id: schoolId, schoolYear: { $lt: year }, ...academicClassVisibilityFilter }).sort({ schoolYear: -1 }).lean(),
+      Class.find({ school_id: schoolId, schoolYear: { $lt: year }, ...academicClassVisibilityFilter }).select('+monthlyFee').sort({ schoolYear: -1 }).lean(),
       AcademicMonthlyFeePlan.find({ school_id: schoolId, academicYear: year }).lean(),
     ]);
     const planByKey = new Map(plans.map((plan) => [keyOf(plan), plan]));
