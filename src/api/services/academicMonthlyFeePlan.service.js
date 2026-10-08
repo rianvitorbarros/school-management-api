@@ -66,10 +66,16 @@ class AcademicMonthlyFeePlanService {
       // For the future catalogue, resolve the price from the latest currently
       // active matching academic key. The future draft never replaces it.
       const current = classes.length ? currentByKey.get(keyOf(item)) : rawItem;
-      const currentFee = Number(current?.monthlyFee);
+      // When the target catalogue does not exist yet, `rawItem` is itself the
+      // current class. Keep that value as the authoritative fallback instead
+      // of allowing a failed key lookup to erase a valid Class.monthlyFee.
+      const currentFee = Number(current?.monthlyFee ?? rawItem.monthlyFee);
       const currentValue = Number.isFinite(currentFee) ? money(Math.round(currentFee * 100)) : null;
       const draftValue = plan ? money(plan.draftCents) : null;
       return { ...publicPlan(plan || { _id: `${keyOf(item)}`, academicYear: year, level: item.level, grade: item.grade, shift: item.shift, draftCents: null, publishedCents: null, publishedVersion: 0, updatedAt: null }),
+        // The plan can predate normalization. The display/lookup key must
+        // always describe the class catalogue currently being planned.
+        level: item.level, grade: item.grade, shift: item.shift,
         id: plan ? String(plan._id) : null, classId: String(item._id), className: item.name, classCount: 1, studentCount: Number(item.studentCount || 0),
         status: draftValue === null ? 'PENDING' : 'CONFIGURED' };
     }).sort((a, b) => `${a.level}${a.grade}${a.shift}${a.className}`.localeCompare(`${b.level}${b.grade}${b.shift}${b.className}`, 'pt-BR'));
