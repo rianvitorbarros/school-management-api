@@ -13,7 +13,10 @@ const normalizeGrade = (grade, className = '') => {
   const raw = String(grade || '').trim();
   const normalized = raw.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
   if (normalized === 'MATERNAL') return 'Maternal';
-  if (raw === '.' && /7\s*[º°o]?\s*ano/i.test(className)) return '7º Ano';
+  // Legacy records used a dot for the known 7th-grade key. The class label
+  // was not persisted on price-plan records, so normalize that established
+  // legacy alias consistently for both classes and plans.
+  if (raw === '.') return '7º Ano';
   const year = normalized.match(/^(\d+)\s*[º°o]?\s*ANO$/) || normalized.match(/^(\d+)$/);
   return year ? `${year[1]}º Ano` : raw;
 };
