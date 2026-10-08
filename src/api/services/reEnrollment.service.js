@@ -75,7 +75,7 @@ class ReEnrollmentService {
     const [progressions, enrollments, targetClasses] = await Promise.all([
       AcademicProgression.find({ school_id: schoolId, active: true }).lean(),
       Enrollment.find({ school_id: schoolId, academicYear: period.academicYearFrom, status: 'Ativa' }).populate('class', 'level grade').lean(),
-      Class.find({ school_id: schoolId, schoolYear: period.academicYearTo, status: { $in: ['Planejada', 'Ativa'] } }).select('level grade').lean(),
+      Class.find({ school_id: schoolId, schoolYear: period.academicYearTo, status: { $in: ['Planejada', 'Ativa'] } }).select('level grade shift').lean(),
     ]);
     const rules = new Map(progressions.map((rule) => [`${rule.level}::${rule.fromGrade}`, rule]));
     const missingRules = new Map(); let eligible = 0; let missingClass = 0;
@@ -137,7 +137,7 @@ class ReEnrollmentService {
     return { student, guardian, period, eligibility: finance.blocked ? 'FINANCIAL_BLOCK' : 'ELIGIBLE', currentEnrollment: enrollment, currentClass, suggestedNextGrade: { level: currentClass.level, grade: progression.toGrade }, suggestedNextClass: targetClass, request: null, financial: finance, pricing };
   }
   _serializeEligibility(item) {
-    return { student: { id: idOf(item.student), fullName: item.student?.fullName || '' }, currentEnrollment: item.currentEnrollment ? { id: idOf(item.currentEnrollment), academicYear: item.currentEnrollment.academicYear, status: item.currentEnrollment.status, class: classSnapshot(item.currentClass) } : null, targetAcademicYear: item.period.academicYearTo, suggestedNextGrade: item.suggestedNextGrade, suggestedNextClass: classSnapshot(item.suggestedNextClass), publishedMonthlyFee: item.pricing?.value || null, pricingVersionId: item.pricing?.versionId || null, eligibility: item.eligibility, request: item.request || null };
+    return { student: { id: idOf(item.student), fullName: item.student?.fullName || '' }, currentEnrollment: item.currentEnrollment ? { id: idOf(item.currentEnrollment), academicYear: item.currentEnrollment.academicYear, status: item.currentEnrollment.status, class: classSnapshot(item.currentClass) } : null, targetAcademicYear: item.period.academicYearTo, suggestedNextGrade: item.suggestedNextGrade, suggestedNextClass: classSnapshot(item.suggestedNextClass), publishedMonthlyFee: item.pricing?.value || null, publishedMonthlyFeeCents: item.pricing?.cents ?? null, pricingVersionId: item.pricing?.versionId || null, pricingVersion: item.pricing?.version ?? null, eligibility: item.eligibility, request: item.request || null };
   }
   async getGuardianEligibility({ schoolId, accountId, tutorId }) {
     const period = await this._openPeriod(schoolId);
@@ -156,7 +156,7 @@ class ReEnrollmentService {
     if (eligibility.eligibility !== 'ELIGIBLE') throw httpError('Este aluno não está elegível para rematrícula.', 409, eligibility.eligibility);
     const finance = eligibility.financial || { blocked: false, count: 0 };
     try {
-      const request = await new ReEnrollmentRequest({ school_id: schoolId, studentId, studentNameSnapshot: eligibility.student.fullName || '', guardianId: tutorId, guardianNameSnapshot: eligibility.guardian.fullName || '', currentEnrollmentId: eligibility.currentEnrollment._id, academicYearFrom: period.academicYearFrom, academicYearTo: period.academicYearTo, currentClassId: eligibility.currentClass._id, currentClassSnapshot: classSnapshot(eligibility.currentClass), targetGradeName: eligibility.suggestedNextGrade.grade, targetLevelName: eligibility.suggestedNextGrade.level, targetClassId: eligibility.suggestedNextClass?._id || null, targetClassSnapshot: classSnapshot(eligibility.suggestedNextClass), periodId: period._id, financialStatusAtRequest: finance.blocked ? 'OVERDUE' : 'CLEAR', financialOverdueCountAtRequest: finance.count, monthlyFeeSnapshotCents: Math.round(eligibility.pricing.value * 100), pricingAcademicYear: period.academicYearTo, pricingVersionId: eligibility.pricing.versionId }).save();
+      const request = await new ReEnrollmentRequest({ school_id: schoolId, studentId, studentNameSnapshot: eligibility.student.fullName || '', guardianId: tutorId, guardianNameSnapshot: eligibility.guardian.fullName || '', currentEnrollmentId: eligibility.currentEnrollment._id, academicYearFrom: period.academicYearFrom, academicYearTo: period.academicYearTo, currentClassId: eligibility.currentClass._id, currentClassSnapshot: classSnapshot(eligibility.currentClass), targetGradeName: eligibility.suggestedNextGrade.grade, targetLevelName: eligibility.suggestedNextGrade.level, targetClassId: eligibility.suggestedNextClass?._id || null, targetClassSnapshot: classSnapshot(eligibility.suggestedNextClass), periodId: period._id, financialStatusAtRequest: finance.blocked ? 'OVERDUE' : 'CLEAR', financialOverdueCountAtRequest: finance.count, monthlyFeeSnapshotCents: eligibility.pricing.cents, pricingAcademicYear: period.academicYearTo, pricingVersionId: eligibility.pricing.versionId }).save();
       return { request, created: true };
     } catch (error) {
       if (error?.code !== 11000) throw error;
@@ -193,7 +193,7 @@ class ReEnrollmentService {
     if (enrollment) {
       if (String(enrollment.class) !== String(targetClass._id)) throw httpError('O aluno já possui uma matrícula em outra turma no ano letivo de destino.', 409, 'TARGET_ENROLLMENT_CONFLICT');
     } else {
-      try { enrollment = await new Enrollment({ student: request.studentId, class: targetClass._id, academicYear: request.academicYearTo, school_id: schoolId, agreedFee: targetClass.monthlyFee, status: 'Ativa' }).save(); }
+      try { enrollment = await new Enrollment({ student: request.studentId, class: targetClass._id, academicYear: request.academicYearTo, school_id: schoolId, agreedFee: request.monthlyFeeSnapshotCents / 100, status: 'Ativa' }).save(); }
       catch (error) {
         if (error?.code !== 11000) throw error;
         enrollment = await Enrollment.findOne({ school_id: schoolId, student: request.studentId, academicYear: request.academicYearTo });

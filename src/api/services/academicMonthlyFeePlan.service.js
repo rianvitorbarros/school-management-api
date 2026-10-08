@@ -9,7 +9,16 @@ const academicClassVisibilityFilter = {
   ],
 };
 
-const keyOf = (item) => `${item.level}::${item.grade}::${item.shift}`;
+const normalizeGrade = (grade, className = '') => {
+  const raw = String(grade || '').trim();
+  const normalized = raw.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+  if (normalized === 'MATERNAL') return 'Maternal';
+  if (raw === '.' && /7\s*[º°o]?\s*ano/i.test(className)) return '7º Ano';
+  const year = normalized.match(/^(\d+)\s*[º°o]?\s*ANO$/) || normalized.match(/^(\d+)$/);
+  return year ? `${year[1]}º Ano` : raw;
+};
+const normalizedItem = (item) => ({ ...item, grade: normalizeGrade(item.grade, item.className || item.name) });
+const keyOf = (item) => `${item.level}::${normalizeGrade(item.grade, item.className || item.name)}::${item.shift}`;
 const toCents = (value) => {
   if (value === null || value === undefined || value === '') return null;
   const raw = String(value).trim();
@@ -51,12 +60,14 @@ class AcademicMonthlyFeePlanService {
     // classes exist, they become the display catalogue while prices remain
     // shared by the academic key (not by the A/B class section).
     const displayClasses = classes.length ? classes : priorClasses;
-    const rows = displayClasses.map((item) => {
+    const rows = displayClasses.map((rawItem) => {
+      const item = normalizedItem(rawItem);
       const plan = planByKey.get(keyOf(item));
       // For the future catalogue, resolve the price from the latest currently
       // active matching academic key. The future draft never replaces it.
-      const current = classes.length ? currentByKey.get(keyOf(item)) : item;
-      const currentValue = current ? money(Math.round(Number(current.monthlyFee || 0) * 100)) : null;
+      const current = classes.length ? currentByKey.get(keyOf(item)) : rawItem;
+      const currentFee = Number(current?.monthlyFee);
+      const currentValue = Number.isFinite(currentFee) ? money(Math.round(currentFee * 100)) : null;
       const draftValue = plan ? money(plan.draftCents) : null;
       return { ...publicPlan(plan || { _id: `${keyOf(item)}`, academicYear: year, level: item.level, grade: item.grade, shift: item.shift, draftCents: null, publishedCents: null, publishedVersion: 0, updatedAt: null }),
         id: plan ? String(plan._id) : null, classId: String(item._id), className: item.name, classCount: 1, studentCount: Number(item.studentCount || 0),
@@ -72,13 +83,17 @@ class AcademicMonthlyFeePlanService {
   async saveDraft(schoolId, actorId, { academicYear, rows = [] }) {
     const year = Number(academicYear);
     if (!Number.isInteger(year) || !Array.isArray(rows)) throw Object.assign(new Error('Planejamento inválido.'), { statusCode: 400, code: 'INVALID_PLAN' });
-    const uniqueRows = [...new Map(rows.map((row) => [keyOf(row), row])).values()];
+    const uniqueRows = [...new Map(rows.map((row) => [keyOf(row), normalizedItem(row)])).values()];
     for (const row of uniqueRows) {
       if (!row.level || !row.grade || !row.shift) throw Object.assign(new Error('Série, segmento e turno são obrigatórios.'), { statusCode: 400, code: 'INVALID_PRICING_KEY' });
-      const existing = await AcademicMonthlyFeePlan.findOne({ school_id: schoolId, academicYear: year, level: row.level, grade: row.grade, shift: row.shift });
+      const candidates = await AcademicMonthlyFeePlan.find({ school_id: schoolId, academicYear: year, level: row.level, shift: row.shift });
+      const existing = candidates.find((item) => keyOf(item) === keyOf(row)) || null;
       if (row.updatedAt && existing && new Date(row.updatedAt).getTime() !== new Date(existing.updatedAt).getTime()) throw Object.assign(new Error('Este planejamento foi alterado por outro usuário. Atualize a tela antes de salvar.'), { statusCode: 409, code: 'PRICING_VERSION_CONFLICT' });
       const previous = existing ? publicPlan(existing) : null;
       const plan = existing || new AcademicMonthlyFeePlan({ school_id: schoolId, academicYear: year, level: row.level, grade: row.grade, shift: row.shift });
+      // Keep legacy aliases as historical records while the active plan adopts
+      // the canonical academic key on its next explicit save.
+      plan.grade = row.grade;
       plan.draftCents = toCents(row.draftValue);
       plan.draftUpdatedBy = actorId || null;
       await plan.save();
@@ -88,12 +103,19 @@ class AcademicMonthlyFeePlanService {
   }
 
   async bulkAdjust(schoolId, actorId, payload) {
-    const { academicYear, adjustmentType, value, scope = 'ALL', rows = [] } = payload;
+    const { academicYear, adjustmentType, value, scope = 'ALL', rows = [], baseSource = 'CURRENT' } = payload;
     const signed = Number(value);
     if (!Number.isFinite(signed) || !['PERCENTAGE', 'FIXED'].includes(adjustmentType)) throw Object.assign(new Error('Reajuste inválido.'), { statusCode: 400, code: 'INVALID_ADJUSTMENT' });
     const overview = await this.overview(schoolId, academicYear);
     const allowed = new Set((rows.length ? rows : overview.rows).map((row) => keyOf(row)));
-    const updates = overview.rows.filter((row) => allowed.has(keyOf(row)) && (scope === 'ALL' || row.draftValue === null)).map((row) => ({ level: row.level, grade: row.grade, shift: row.shift, draftValue: Number((((row.draftValue ?? row.currentValue ?? 0) * (adjustmentType === 'PERCENTAGE' ? 1 + signed / 100 : 1)) + (adjustmentType === 'FIXED' ? signed : 0)).toFixed(2)) }));
+    if (!['CURRENT', 'DRAFT'].includes(baseSource)) throw Object.assign(new Error('Base de reajuste inválida.'), { statusCode: 400, code: 'INVALID_ADJUSTMENT_BASE' });
+    const selected = overview.rows.filter((row) => allowed.has(keyOf(row)) && (scope === 'ALL' || row.draftValue === null));
+    const missingBase = selected.filter((row) => (baseSource === 'DRAFT' ? row.draftValue : row.currentValue) === null);
+    if (missingBase.length) throw Object.assign(new Error('Não foi possível aplicar o reajuste porque existem configurações sem mensalidade vigente.'), { statusCode: 409, code: 'MISSING_CURRENT_MONTHLY_FEE', details: missingBase.map(({ level, grade, shift }) => ({ level, grade, shift })) });
+    const updates = selected.map((row) => {
+      const base = baseSource === 'DRAFT' ? row.draftValue : row.currentValue;
+      return { level: row.level, grade: row.grade, shift: row.shift, draftValue: Number(((base * (adjustmentType === 'PERCENTAGE' ? 1 + signed / 100 : 1)) + (adjustmentType === 'FIXED' ? signed : 0)).toFixed(2)) };
+    });
     if (updates.some((row) => row.draftValue < 0)) throw Object.assign(new Error('O reajuste não pode gerar mensalidade negativa.'), { statusCode: 400, code: 'NEGATIVE_MONTHLY_FEE' });
     return { affected: updates.length, overview: await this.saveDraft(schoolId, actorId, { academicYear, rows: updates }) };
   }
@@ -108,8 +130,10 @@ class AcademicMonthlyFeePlanService {
   }
 
   async publishedForDestination(schoolId, academicYear, { level, grade, shift }) {
-    const exact = await AcademicMonthlyFeePlan.findOne({ school_id: schoolId, academicYear: Number(academicYear), level, grade, shift, publishedCents: { $ne: null } }).lean();
-    return exact ? { value: money(exact.publishedCents), versionId: String(exact._id), version: exact.publishedVersion } : null;
+    const canonicalGrade = normalizeGrade(grade);
+    const candidates = await AcademicMonthlyFeePlan.find({ school_id: schoolId, academicYear: Number(academicYear), level, shift, publishedCents: { $ne: null } }).lean();
+    const exact = candidates.find((item) => normalizeGrade(item.grade) === canonicalGrade) || null;
+    return exact ? { value: money(exact.publishedCents), cents: exact.publishedCents, versionId: String(exact._id), version: exact.publishedVersion } : null;
   }
 }
 module.exports = new AcademicMonthlyFeePlanService();
