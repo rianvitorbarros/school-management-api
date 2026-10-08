@@ -75,7 +75,7 @@ class AcademicMonthlyFeePlanService {
       return { ...publicPlan(plan || { _id: `${keyOf(item)}`, academicYear: year, level: item.level, grade: item.grade, shift: item.shift, draftCents: null, publishedCents: null, publishedVersion: 0, updatedAt: null }),
         // The plan can predate normalization. The display/lookup key must
         // always describe the class catalogue currently being planned.
-        level: item.level, grade: item.grade, shift: item.shift,
+        level: item.level, grade: item.grade, shift: item.shift, currentValue,
         id: plan ? String(plan._id) : null, classId: String(item._id), className: item.name, classCount: 1, studentCount: Number(item.studentCount || 0),
         status: draftValue === null ? 'PENDING' : 'CONFIGURED' };
     }).sort((a, b) => `${a.level}${a.grade}${a.shift}${a.className}`.localeCompare(`${b.level}${b.grade}${b.shift}${b.className}`, 'pt-BR'));
