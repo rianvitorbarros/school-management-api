@@ -840,42 +840,21 @@ class ReportCardService {
       );
     }
 
-    let finalScore = null;
-    let tScore = null;
-    let aScore = null;
-    let pScore = null;
-
-    if (testScore !== undefined || activityScore !== undefined || participationScore !== undefined) {
-      tScore = (testScore !== null && testScore !== '') ? Number(testScore) : null;
-      aScore = (activityScore !== null && activityScore !== '') ? Number(activityScore) : null;
-      pScore = (participationScore !== null && participationScore !== '') ? Number(participationScore) : null;
-
-      if (
-        (tScore !== null && Number.isNaN(tScore)) ||
-        (aScore !== null && Number.isNaN(aScore)) ||
-        (pScore !== null && Number.isNaN(pScore))
-      ) {
-        throw this._createError('As notas informadas devem ser valores numéricos válidos.', 400);
+    const parseScore = (value, label) => {
+      if (value === null) return null;
+      if (typeof value !== 'number' && typeof value !== 'string') {
+        throw this._createError(`${label} deve ser uma nota numérica válida.`, 400);
       }
-
-      if (tScore !== null || aScore !== null || pScore !== null) {
-        finalScore = (tScore || 0) + (aScore || 0) + (pScore || 0);
-        
-        if (finalScore > 10) {
-          throw this._createError(`A soma das notas (Prova, Atividades, Participação) deu ${finalScore} e não pode ultrapassar 10.`, 400);
-        }
+      const normalized = typeof value === 'string' ? value.trim().replace(',', '.') : value;
+      if (normalized === '') {
+        throw this._createError(`${label} deve ser uma nota numérica válida.`, 400);
       }
-    } 
-    else if (score !== undefined && score !== null && score !== '') {
-      finalScore = Number(score);
-      if (Number.isNaN(finalScore) || finalScore < 0 || finalScore > 10) {
-        throw this._createError('A nota deve estar entre 0 e 10.', 400);
+      const parsed = Number(normalized);
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 10) {
+        throw this._createError(`${label} deve estar entre 0 e 10.`, 400);
       }
-    }
-
-    if (finalScore === null) {
-      throw this._createError('Nenhuma nota foi informada.', 400);
-    }
+      return parsed;
+    };
 
     const reportCard = await ReportCard.findOne({
       _id: reportCardId,
@@ -910,15 +889,36 @@ class ReportCardService {
     const subjectEntry = reportCard.subjects[subjectIndex];
     this._assertCanEditSubject({ actor, reportCard, subjectEntry });
 
+    const editingComponents =
+      testScore !== undefined ||
+      activityScore !== undefined ||
+      participationScore !== undefined;
+    let finalScore = null;
+    let tScore;
+    let aScore;
+    let pScore;
+    if (editingComponents) {
+      tScore = testScore === undefined ? subjectEntry.testScore ?? null : parseScore(testScore, 'Prova');
+      aScore = activityScore === undefined ? subjectEntry.activityScore ?? null : parseScore(activityScore, 'Atividade');
+      pScore = participationScore === undefined ? subjectEntry.participationScore ?? null : parseScore(participationScore, 'Participação');
+      if (tScore !== null || aScore !== null || pScore !== null) {
+        finalScore = (tScore ?? 0) + (aScore ?? 0) + (pScore ?? 0);
+        if (finalScore > 10) {
+          throw this._createError(`A soma das notas (Prova, Atividades, Participação) deu ${finalScore} e não pode ultrapassar 10.`, 400);
+        }
+      }
+    } else if (score !== undefined && score !== null) {
+      finalScore = parseScore(score, 'Nota');
+    }
+    if (finalScore === null) {
+      throw this._createError('Informe ao menos uma nota de Prova, Atividade ou Participação.', 400);
+    }
+
     const previousSnapshot = this._scoreSnapshot(subjectEntry);
     const isOverwrite =
       previousSnapshot.score !== null &&
       Number(previousSnapshot.score) !== Number(finalScore);
     const normalizedReason = String(reason || observation || '').trim();
-    const editingComponents =
-      testScore !== undefined ||
-      activityScore !== undefined ||
-      participationScore !== undefined;
     if (isOverwrite && !editingComponents && !normalizedReason) {
       throw this._createError(
         'Informe o motivo da alteração para substituir uma nota existente.',
