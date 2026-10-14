@@ -9,6 +9,7 @@ const Enrollment = require('../models/enrollment.model');
 const Class = require('../models/class.model');
 const Invoice = require('../models/invoice.model');
 const academicMonthlyFeePlanService = require('./academicMonthlyFeePlan.service');
+const { normalizeAcademicGrade: normalizeGrade, isNumberedPeriod } = require('../utils/academicGrade.util');
 
 function httpError(message, statusCode = 400, code = null) {
   const error = new Error(message);
@@ -20,17 +21,9 @@ function httpError(message, statusCode = 400, code = null) {
 function idOf(value) { return value?._id ? String(value._id) : value ? String(value) : null; }
 function classSnapshot(classDoc) {
   if (!classDoc) return null;
-  return { id: idOf(classDoc), name: classDoc.name || '', level: classDoc.level || '', grade: classDoc.grade || '', shift: classDoc.shift || '' };
+  return { id: idOf(classDoc), name: classDoc.name || '', level: classDoc.level || '', grade: normalizeGrade(classDoc.grade, classDoc.name), shift: classDoc.shift || '' };
 }
 function todayStart() { const now = new Date(); now.setHours(0, 0, 0, 0); return now; }
-function normalizeGrade(grade) {
-  const raw = String(grade || '').trim();
-  const normalized = raw.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
-  if (normalized === 'MATERNAL') return 'Maternal';
-  if (raw === '.') return '7º Ano';
-  const year = normalized.match(/^(\d+)\s*[º°o]?\s*ANO$/) || normalized.match(/^(\d+)$/);
-  return year ? `${year[1]}º Ano` : raw;
-}
 function progressionKey(level, grade) { return `${level}::${normalizeGrade(grade)}`; }
 
 class ReEnrollmentService {
@@ -83,14 +76,15 @@ class ReEnrollmentService {
     if (!period) return { periodConfigured: false, period: null, progression: { total: 0, missing: 0, missingRules: [] }, students: { active: 0, eligibleForProgression: 0, missingProgression: 0, missingClass: 0 }, ready: false, issues: [{ code: 'PERIOD_NOT_CONFIGURED', message: 'Configure um período de rematrícula para começar.' }] };
     const [progressions, enrollments, targetClasses] = await Promise.all([
       AcademicProgression.find({ school_id: schoolId, active: true }).lean(),
-      Enrollment.find({ school_id: schoolId, academicYear: period.academicYearFrom, status: 'Ativa' }).populate('class', 'level grade').lean(),
-      Class.find({ school_id: schoolId, schoolYear: period.academicYearTo, status: { $in: ['Planejada', 'Ativa'] } }).select('level grade shift').lean(),
+      Enrollment.find({ school_id: schoolId, academicYear: period.academicYearFrom, status: 'Ativa' }).populate('class', 'level grade name').lean(),
+      Class.find({ school_id: schoolId, schoolYear: period.academicYearTo, status: { $in: ['Planejada', 'Ativa'] } }).select('level grade shift name').lean(),
     ]);
     const rules = new Map(progressions.map((rule) => [progressionKey(rule.level, rule.fromGrade), rule]));
     const missingRules = new Map(); let eligible = 0; let missingClass = 0;
     for (const enrollment of enrollments) {
       if (!enrollment.class) { missingClass += 1; continue; }
-      const rule = rules.get(progressionKey(enrollment.class.level, enrollment.class.grade));
+      const rule = rules.get(progressionKey(enrollment.class.level, normalizeGrade(enrollment.class.grade, enrollment.class.name)))
+        || rules.get(progressionKey(enrollment.class.level, enrollment.class.grade));
       if (rule) eligible += 1;
       else missingRules.set(progressionKey(enrollment.class.level, enrollment.class.grade), { level: enrollment.class.level, fromGrade: normalizeGrade(enrollment.class.grade) });
     }
@@ -98,12 +92,16 @@ class ReEnrollmentService {
     const issues = [];
     if (missing) issues.push({ code: 'MISSING_PROGRESSION', message: `${missing} série(s) com alunos ativos não possui(em) progressão configurada.`, rules: [...missingRules.values()] });
     if (missingClass) issues.push({ code: 'MISSING_CLASS', message: `${missingClass} aluno(s) ativo(s) não possui(em) turma/série identificável.` });
-    const targetKeys = new Set(targetClasses.map((item) => progressionKey(item.level, item.grade)));
+    const targetKeys = new Set(targetClasses.flatMap((item) => [progressionKey(item.level, normalizeGrade(item.grade, item.name)), progressionKey(item.level, item.grade)]));
     const progressionsWithoutTargetClass = progressions.filter((item) => item.progressionType !== 'TERMINAL' && !targetKeys.has(progressionKey(item.toLevel || item.level, item.toGrade))).map((item) => ({ level: item.toLevel || item.level, grade: item.toGrade }));
     if (progressionsWithoutTargetClass.length) issues.push({ code: 'NO_TARGET_CLASS', severity: 'warning', message: `${progressionsWithoutTargetClass.length} progressão(ões) ainda não possui(em) turma de destino.`, rules: progressionsWithoutTargetClass });
     const publishedPlans = await require('../models/academicMonthlyFeePlan.model').find({ school_id: schoolId, academicYear: period.academicYearTo, publishedCents: { $ne: null } }).select('level grade shift').lean();
-    const publishedKeys = new Set(publishedPlans.map((item) => `${item.level}::${item.grade}::${item.shift}`));
-    const missingPrices = targetClasses.filter((item) => !publishedKeys.has(`${item.level}::${item.grade}::${item.shift}`)).map((item) => ({ level: item.level, grade: item.grade, shift: item.shift }));
+    const publishedKeys = new Set(publishedPlans.map((item) => `${item.level}::${normalizeGrade(item.grade)}::${item.shift}`));
+    const missingPrices = targetClasses.filter((item) => {
+      const grade = normalizeGrade(item.grade, item.name);
+      return !publishedKeys.has(`${item.level}::${grade}::${item.shift}`) &&
+        !(isNumberedPeriod(grade) && publishedKeys.has(`${item.level}::PERIODO::${item.shift}`));
+    }).map((item) => ({ level: item.level, grade: normalizeGrade(item.grade, item.name), shift: item.shift }));
     const distinctMissingPrices = [...new Map(missingPrices.map((item) => [`${item.level}::${item.grade}::${item.shift}`, item])).values()];
     if (distinctMissingPrices.length) issues.push({ code: 'MISSING_PUBLISHED_MONTHLY_FEE', message: `${distinctMissingPrices.length} configuração(ões) de mensalidade de destino ainda não foi(foram) publicada(s).`, rules: distinctMissingPrices });
     return { periodConfigured: true, period, academicYearFrom: period.academicYearFrom, academicYearTo: period.academicYearTo, progression: { total: progressions.length, missing, missingRules: [...missingRules.values()] }, students: { active: enrollments.length, eligibleForProgression: eligible, missingProgression: enrollments.length - eligible - missingClass, missingClass }, targetClasses: { available: targetClasses.length, progressionsWithoutTargetClass: progressionsWithoutTargetClass.length }, ready: !issues.some((item) => item.severity !== 'warning'), issues };
@@ -124,34 +122,36 @@ class ReEnrollmentService {
   }
   async _buildEligibility({ schoolId, accountId, tutorId, studentId, period }) {
     await this._assertGuardianLink({ schoolId, accountId, studentId });
-    const [student, guardian, enrollment] = await Promise.all([
+    const [student, guardian, enrollment, finance] = await Promise.all([
       Student.findOne({ _id: studentId, school_id: schoolId, isActive: true }).select('fullName').lean(),
       Tutor.findOne({ _id: tutorId, school_id: schoolId }).select('fullName').lean(),
       Enrollment.findOne({ school_id: schoolId, student: studentId, academicYear: period.academicYearFrom, status: 'Ativa' }).populate('class', 'name level grade shift schoolYear status').lean(),
+      this._financialState(schoolId, studentId),
     ]);
     if (!student || !guardian) throw httpError('Aluno ou responsável não encontrado.', 404, 'GUARDIAN_CONTEXT_NOT_FOUND');
-    if (!enrollment?.class) return { student, guardian, period, eligibility: 'NO_ACTIVE_ENROLLMENT', currentEnrollment: null, suggestedNextGrade: null, suggestedNextClass: null, request: null };
+    if (!enrollment?.class) return { student, guardian, period, financial: finance, eligibility: 'NO_ACTIVE_ENROLLMENT', currentEnrollment: null, suggestedNextGrade: null, suggestedNextClass: null, request: null };
     const currentClass = enrollment.class;
     const progressionCandidates = await AcademicProgression.find({ school_id: schoolId, level: currentClass.level, active: true }).lean();
-    const progression = progressionCandidates.find((item) => normalizeGrade(item.fromGrade) === normalizeGrade(currentClass.grade)) || null;
-    if (!progression) return { student, guardian, period, eligibility: 'NO_ACADEMIC_PROGRESSION', currentEnrollment: enrollment, currentClass, suggestedNextGrade: null, suggestedNextClass: null, request: null };
-    if (progression.progressionType === 'TERMINAL') return { student, guardian, period, eligibility: 'TERMINAL_PROGRESSION', currentEnrollment: enrollment, currentClass, suggestedNextGrade: null, suggestedNextClass: null, request: null };
+    const progression = progressionCandidates.find((item) => normalizeGrade(item.fromGrade) === normalizeGrade(currentClass.grade, currentClass.name))
+      || progressionCandidates.find((item) => normalizeGrade(item.fromGrade) === normalizeGrade(currentClass.grade)) || null;
+    if (!progression) return { student, guardian, period, financial: finance, eligibility: 'NO_ACADEMIC_PROGRESSION', currentEnrollment: enrollment, currentClass, suggestedNextGrade: null, suggestedNextClass: null, request: null };
+    if (progression.progressionType === 'TERMINAL') return { student, guardian, period, financial: finance, eligibility: 'TERMINAL_PROGRESSION', currentEnrollment: enrollment, currentClass, suggestedNextGrade: null, suggestedNextClass: null, request: null };
     const targetLevel = progression.toLevel || currentClass.level;
     const targetGrade = normalizeGrade(progression.toGrade);
-    const targetClass = await Class.findOne({ school_id: schoolId, schoolYear: period.academicYearTo, level: targetLevel, grade: progression.toGrade, status: { $in: ['Planejada', 'Ativa'] }, shift: currentClass.shift }).sort({ name: 1 }).lean()
-      || await Class.findOne({ school_id: schoolId, schoolYear: period.academicYearTo, level: targetLevel, grade: progression.toGrade, status: { $in: ['Planejada', 'Ativa'] } }).sort({ shift: 1, name: 1 }).lean();
+    const destinationClasses = await Class.find({ school_id: schoolId, schoolYear: period.academicYearTo, level: targetLevel, status: { $in: ['Planejada', 'Ativa'] } }).sort({ shift: 1, name: 1 }).lean();
+    const matchingClasses = destinationClasses.filter((item) => normalizeGrade(item.grade, item.name) === targetGrade || normalizeGrade(item.grade) === targetGrade);
+    const targetClass = matchingClasses.find((item) => item.shift === currentClass.shift) || matchingClasses[0] || null;
     const request = await ReEnrollmentRequest.findOne({ school_id: schoolId, studentId, academicYearTo: period.academicYearTo }).sort({ updatedAt: -1 }).lean();
     const targetShift = targetClass?.shift || currentClass.shift;
     const pricing = await academicMonthlyFeePlanService.publishedForDestination(schoolId, period.academicYearTo, { level: targetLevel, grade: targetGrade, shift: targetShift });
     const next = { level: targetLevel, grade: targetGrade, shift: targetShift };
-    if (request?.status === 'PENDING') return { student, guardian, period, eligibility: 'ALREADY_REQUESTED', currentEnrollment: enrollment, currentClass, suggestedNextGrade: next, suggestedNextClass: targetClass, request, pricing };
-    if (request?.status === 'APPROVED' || request?.status === 'REJECTED') return { student, guardian, period, eligibility: request.status, currentEnrollment: enrollment, currentClass, suggestedNextGrade: next, suggestedNextClass: targetClass, request, pricing };
-    if (!pricing) return { student, guardian, period, eligibility: 'NO_PUBLISHED_MONTHLY_FEE', currentEnrollment: enrollment, currentClass, suggestedNextGrade: next, suggestedNextClass: targetClass, request: null };
-    const finance = await this._financialState(schoolId, studentId);
-    return { student, guardian, period, eligibility: finance.blocked ? 'FINANCIAL_BLOCK' : 'ELIGIBLE', currentEnrollment: enrollment, currentClass, suggestedNextGrade: next, suggestedNextClass: targetClass, request: null, financial: finance, pricing };
+    if (request?.status === 'PENDING') return { student, guardian, period, financial: finance, eligibility: 'ALREADY_REQUESTED', currentEnrollment: enrollment, currentClass, suggestedNextGrade: next, suggestedNextClass: targetClass, request, pricing };
+    if (request?.status === 'APPROVED' || request?.status === 'REJECTED') return { student, guardian, period, financial: finance, eligibility: request.status, currentEnrollment: enrollment, currentClass, suggestedNextGrade: next, suggestedNextClass: targetClass, request, pricing };
+    if (!pricing) return { student, guardian, period, financial: finance, eligibility: 'NO_PUBLISHED_MONTHLY_FEE', currentEnrollment: enrollment, currentClass, suggestedNextGrade: next, suggestedNextClass: targetClass, request: null };
+    return { student, guardian, period, financial: finance, eligibility: finance.blocked ? 'FINANCIAL_BLOCK' : 'ELIGIBLE', currentEnrollment: enrollment, currentClass, suggestedNextGrade: next, suggestedNextClass: targetClass, request: null, pricing };
   }
   _serializeEligibility(item) {
-    return { student: { id: idOf(item.student), fullName: item.student?.fullName || '' }, currentEnrollment: item.currentEnrollment ? { id: idOf(item.currentEnrollment), academicYear: item.currentEnrollment.academicYear, status: item.currentEnrollment.status, class: classSnapshot(item.currentClass) } : null, targetAcademicYear: item.period.academicYearTo, targetLevel: item.suggestedNextGrade?.level || null, targetGrade: item.suggestedNextGrade?.grade || null, targetShift: item.suggestedNextGrade?.shift || null, suggestedNextGrade: item.suggestedNextGrade, suggestedNextClass: classSnapshot(item.suggestedNextClass), publishedMonthlyFee: item.pricing?.value ?? null, publishedMonthlyFeeCents: item.pricing?.cents ?? null, pricingVersionId: item.pricing?.versionId || null, pricingVersion: item.pricing?.version ?? null, eligibility: item.eligibility, request: item.request || null };
+    return { student: { id: idOf(item.student), fullName: item.student?.fullName || '' }, currentEnrollment: item.currentEnrollment ? { id: idOf(item.currentEnrollment), academicYear: item.currentEnrollment.academicYear, status: item.currentEnrollment.status, class: classSnapshot(item.currentClass) } : null, targetAcademicYear: item.period.academicYearTo, targetLevel: item.suggestedNextGrade?.level || null, targetGrade: item.suggestedNextGrade?.grade || null, targetShift: item.suggestedNextGrade?.shift || null, suggestedNextGrade: item.suggestedNextGrade, suggestedNextClass: classSnapshot(item.suggestedNextClass), publishedMonthlyFee: item.pricing?.value ?? null, publishedMonthlyFeeCents: item.pricing?.cents ?? null, pricingVersionId: item.pricing?.versionId || null, pricingVersion: item.pricing?.version ?? null, eligibility: item.eligibility, financial: item.financial || null, request: item.request || null };
   }
   async getGuardianEligibility({ schoolId, accountId, tutorId }) {
     const period = await this._openPeriod(schoolId);
@@ -202,7 +202,7 @@ class ReEnrollmentService {
     const targetClass = await Class.findOne({ _id: targetClassId, school_id: schoolId }).lean();
     if (!targetClass) throw httpError('Turma de destino não encontrada para esta escola.', 404, 'TARGET_CLASS_NOT_FOUND');
     if (targetClass.schoolYear !== request.academicYearTo) throw httpError('A turma de destino não pertence ao ano letivo da rematrícula.', 409, 'INVALID_TARGET_CLASS_YEAR');
-    if (targetClass.grade !== request.targetGradeName || targetClass.level !== request.targetLevelName) throw httpError('A turma de destino não corresponde à progressão solicitada.', 409, 'INVALID_TARGET_CLASS');
+    if ((normalizeGrade(targetClass.grade, targetClass.name) !== normalizeGrade(request.targetGradeName) && normalizeGrade(targetClass.grade) !== normalizeGrade(request.targetGradeName)) || targetClass.level !== request.targetLevelName) throw httpError('A turma de destino não corresponde à progressão solicitada.', 409, 'INVALID_TARGET_CLASS');
     let enrollment = await Enrollment.findOne({ school_id: schoolId, student: request.studentId, academicYear: request.academicYearTo });
     if (enrollment) {
       if (String(enrollment.class) !== String(targetClass._id)) throw httpError('O aluno já possui uma matrícula em outra turma no ano letivo de destino.', 409, 'TARGET_ENROLLMENT_CONFLICT');

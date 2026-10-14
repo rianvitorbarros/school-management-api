@@ -9,17 +9,7 @@ const academicClassVisibilityFilter = {
   ],
 };
 
-const normalizeGrade = (grade, className = '') => {
-  const raw = String(grade || '').trim();
-  const normalized = raw.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
-  if (normalized === 'MATERNAL') return 'Maternal';
-  // Legacy records used a dot for the known 7th-grade key. The class label
-  // was not persisted on price-plan records, so normalize that established
-  // legacy alias consistently for both classes and plans.
-  if (raw === '.') return '7º Ano';
-  const year = normalized.match(/^(\d+)\s*[º°o]?\s*ANO$/) || normalized.match(/^(\d+)$/);
-  return year ? `${year[1]}º Ano` : raw;
-};
+const { normalizeAcademicGrade: normalizeGrade, isNumberedPeriod } = require('../utils/academicGrade.util');
 const normalizedItem = (item) => ({ ...item, grade: normalizeGrade(item.grade, item.className || item.name) });
 const keyOf = (item) => `${item.level}::${normalizeGrade(item.grade, item.className || item.name)}::${item.shift}`;
 const toCents = (value) => {
@@ -65,7 +55,7 @@ class AcademicMonthlyFeePlanService {
     const displayClasses = classes.length ? classes : priorClasses;
     const rows = displayClasses.map((rawItem) => {
       const item = normalizedItem(rawItem);
-      const plan = planByKey.get(keyOf(item));
+      const plan = planByKey.get(keyOf(item)) || (isNumberedPeriod(item.grade) ? planByKey.get(`${item.level}::PERIODO::${item.shift}`) : null);
       // For the future catalogue, resolve the price from the latest currently
       // active matching academic key. The future draft never replaces it.
       const current = classes.length ? currentByKey.get(keyOf(item)) : rawItem;
@@ -141,7 +131,8 @@ class AcademicMonthlyFeePlanService {
   async publishedForDestination(schoolId, academicYear, { level, grade, shift }) {
     const canonicalGrade = normalizeGrade(grade);
     const candidates = await AcademicMonthlyFeePlan.find({ school_id: schoolId, academicYear: Number(academicYear), level, shift, publishedCents: { $ne: null } }).lean();
-    const exact = candidates.find((item) => normalizeGrade(item.grade) === canonicalGrade) || null;
+    const exact = candidates.find((item) => normalizeGrade(item.grade) === canonicalGrade)
+      || (isNumberedPeriod(canonicalGrade) ? candidates.find((item) => normalizeGrade(item.grade) === 'PERIODO') : null) || null;
     return exact ? { value: money(exact.publishedCents), cents: exact.publishedCents, versionId: String(exact._id), version: exact.publishedVersion } : null;
   }
 }
