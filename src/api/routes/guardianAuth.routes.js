@@ -5,6 +5,7 @@ const { verifyToken } = require('../middlewares/auth.middleware');
 const { verifyGuardianToken } = require('../middlewares/guardianAuth.middleware');
 
 const router = express.Router();
+const guardianAcademicController = require('../controllers/guardianAcademic.controller');
 
 router.post(
   '/guardian-auth/first-access/start',
@@ -51,6 +52,7 @@ router.get(
   verifyGuardianToken,
   guardianAuthController.getGuardianActivities
 );
+router.get('/guardian-auth/students/:studentId/performance', verifyGuardianToken, guardianAcademicController.getPerformance);
 router.get(
   '/guardian-auth/invoices',
   verifyGuardianToken,
