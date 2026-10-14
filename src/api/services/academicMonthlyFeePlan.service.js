@@ -130,10 +130,18 @@ class AcademicMonthlyFeePlanService {
 
   async publishedForDestination(schoolId, academicYear, { level, grade, shift }) {
     const canonicalGrade = normalizeGrade(grade);
-    const candidates = await AcademicMonthlyFeePlan.find({ school_id: schoolId, academicYear: Number(academicYear), level, shift, publishedCents: { $ne: null } }).lean();
-    const exact = candidates.find((item) => normalizeGrade(item.grade) === canonicalGrade)
-      || (isNumberedPeriod(canonicalGrade) ? candidates.find((item) => normalizeGrade(item.grade) === 'PERIODO') : null) || null;
-    return exact ? { value: money(exact.publishedCents), cents: exact.publishedCents, versionId: String(exact._id), version: exact.publishedVersion } : null;
+    // Prices are shared across shifts when the published academic-grade values
+    // agree. Keep the student's shift and preserve the official source version.
+    const candidates = await AcademicMonthlyFeePlan.find({ school_id: schoolId, academicYear: Number(academicYear), level, publishedCents: { $ne: null } }).lean();
+    const numbered = candidates.filter((item) => normalizeGrade(item.grade) === canonicalGrade);
+    const applicable = numbered.length ? numbered : isNumberedPeriod(canonicalGrade)
+      ? candidates.filter((item) => normalizeGrade(item.grade) === 'PERIODO') : [];
+    const amounts = new Set(applicable.map((item) => item.publishedCents));
+    // Missing or conflicting publications never authorize a guessed fee.
+    if (amounts.size !== 1) return null;
+    const selected = applicable.find((item) => item.shift === shift)
+      || applicable.slice().sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0))[0];
+    return { value: money(selected.publishedCents), cents: selected.publishedCents, versionId: String(selected._id), version: selected.publishedVersion };
   }
 }
 module.exports = new AcademicMonthlyFeePlanService();
