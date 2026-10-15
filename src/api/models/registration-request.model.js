@@ -54,8 +54,11 @@ const registrationRequestSchema = new Schema({
     school_id: { type: Schema.Types.ObjectId, ref: 'School', required: true, index: true },
     status: { type: String, enum: ['PENDING', 'APPROVED', 'REJECTED'], default: 'PENDING', index: true },
     registrationType: { type: String, enum: ['ADULT_STUDENT', 'MINOR_STUDENT'], required: true },
+    academicYearTo: { type: Number, min: 1900, max: 2200 },
+    approvedStudentId: { type: Schema.Types.ObjectId, ref: 'Student' },
     selectedClassId: { type: Schema.Types.ObjectId, ref: 'Class', required: false, index: true },
     selectedClassSnapshot: {
+        schoolYear: Number,
         id: String,
         name: String,
         educationLevel: String,

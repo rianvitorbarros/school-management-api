@@ -8,13 +8,20 @@ async function get(req, res) {
   if (!authorize(req)) return res.status(403).json({ message: 'Sem permissão para consultar a ocupação de turmas.' });
   try {
     const data = await service.load(req.user.school_id || req.user.schoolId, req.query.academicYear);
+    if (req.params.classId === 'unallocated') return res.json({ confirmed: [], pending: data.unallocated.filter(s => s.status === 'PENDING'), approved: data.unallocated.filter(s => s.status === 'APPROVED') });
     if (req.params.classId) {
       const row = data.rows.find(r => r.id === req.params.classId);
       if (!row) return res.status(404).json({ message: 'Turma não encontrada neste ano e escola.' });
-      return res.json({ confirmed: row.confirmedStudents, pending: row.pendingStudents });
+      return res.json({ confirmed: row.confirmedStudents, pending: row.pendingStudents, approved: row.approvedStudents });
     }
     // Personal data is requested only when opening a class roster.
-    return res.json({ ...data, rows: data.rows.map(({ confirmedStudents, pendingStudents, ...row }) => row) });
+    const { unallocated, ...summary } = data;
+    return res.json({ ...summary, unallocatedSummary: {
+      pending: unallocated.filter(s => s.status === 'PENDING').length,
+      approved: unallocated.filter(s => s.status === 'APPROVED').length,
+      reEnrollment: unallocated.filter(s => s.source === 'reEnrollment').length,
+      web: unallocated.filter(s => s.source === 'web').length,
+    }, rows: data.rows.map(({ confirmedStudents, pendingStudents, approvedStudents, ...row }) => row) });
   } catch (e) { return res.status(e.statusCode || 500).json({ message: e.statusCode ? e.message : 'Não foi possível consultar a ocupação. Tente novamente.' }); }
 }
 module.exports = { get, authorize };

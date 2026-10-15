@@ -7,6 +7,8 @@ const Enrollment = require('../../api/models/enrollment.model');
 const Request = require('../../api/models/reEnrollmentRequest.model');
 const Invoice = require('../../api/models/invoice.model');
 const School = require('../../api/models/school.model');
+const Registration = require('../../api/models/registration-request.model');
+const Student = require('../../api/models/student.model');
 
 const cls = (overrides = {}) => ({ _id: 'c', name: '1º ANO A', schoolYear: 2027, capacity: 30, status: 'Planejada', ...overrides });
 const student = i => ({ _id: `s${i}`, fullName: `Aluno ${i}`, isActive: true });
@@ -69,29 +71,95 @@ test('only existing administrative roles can read occupancy or student names', (
   assert.equal(authorize({}), false);
 });
 test('queries and populated relations are school-scoped, bounded and year-specific', async () => {
-  const originals = [Class.find, Class.distinct, Enrollment.find, Request.find, Invoice.distinct, School.findById];
+  const originals = [Class.find, Class.distinct, Enrollment.find, Request.find, Invoice.distinct, School.findById, Registration.find, Student.find];
   let queries = 0;
   const query = (filter, data, expectedYear) => {
     queries++; assert.equal(filter.school_id, 'school-A');
     if (expectedYear) assert.equal(filter[expectedYear], 2027);
     return { select() { return this; }, sort() { return this; }, populate(options) { assert.equal(options.match.school_id, 'school-A'); return this; }, lean: async () => data };
   };
-  Class.find = f => query(f, [cls()], 'schoolYear');
+  Class.find = f => { assert.deepEqual(f.schoolYear, { $lte: 2027 }); return query(f, [cls()]); };
+  Registration.find = f => { assert.ok(f.$or); return query(f, []); };
+  Student.find = f => query(f, []);
   Class.distinct = async (field, f) => { assert.equal(f.school_id, 'school-A'); return [2026, 2027]; };
   Enrollment.find = f => query(f, [enrollment(1)], 'academicYear');
   Request.find = f => query(f, [request(2)], 'academicYearTo');
   Invoice.distinct = async (field, f) => { assert.equal(f.school_id, 'school-A'); return []; };
   School.findById = school => { assert.equal(school, 'school-A'); return { select() { return this; }, lean: async () => ({ _id: school, name: 'Escola A', educationModel: 'regular' }) }; };
   try {
-    const result = await load('school-A', '2027'); assert.equal(queries, 3); assert.equal(result.rows[0].pending, 1);
+    const result = await load('school-A', '2027'); assert.equal(queries, 5); assert.equal(result.rows[0].pending, 1);
     let body; const res = { json(v) { body = v; return this; }, status(v) { this.code = v; return this; } };
     await get({ user: { roles: ['Admin'], school_id: 'school-A' }, query: { academicYear: '2027' }, params: {} }, res);
     assert.equal('confirmedStudents' in body.rows[0], false);
+    assert.equal('approvedStudents' in body.rows[0], false);
+    assert.equal('unallocated' in body, false);
     await get({ user: { roles: ['Admin'], school_id: 'school-A' }, query: { academicYear: '2027' }, params: { classId: 'foreign' } }, res);
     assert.equal(res.code, 404);
-  } finally { [Class.find, Class.distinct, Enrollment.find, Request.find, Invoice.distinct, School.findById] = originals; }
+  } finally { [Class.find, Class.distinct, Enrollment.find, Request.find, Invoice.distinct, School.findById, Registration.find, Student.find] = originals; }
 });
 test('missing school and invalid year fail before any data query', async () => {
   await assert.rejects(load(null, 2027), e => e.statusCode === 403);
   await assert.rejects(load('school', '2027 OR 1'), e => e.statusCode === 400);
+});
+
+test('planning uses latest prior structure, actual configuration wins, and never copies source students', () => {
+  const data = build({ classes: [cls({ _id: 'old', schoolYear: 2026, capacity: 20 }), cls({ _id: 'older', schoolYear: 2025 }),
+    cls({ _id: 'other', name: '2º ANO A', schoolYear: 2026 }), cls({ capacity: 25 })],
+    enrollments: [enrollment(1, { academicYear: 2026, class: 'old' })] });
+  assert.equal(data.rows.length, 2);
+  assert.equal(data.rows[0].capacity, 25); assert.equal(data.rows[0].isProjection, false);
+  assert.equal(data.rows[1].referenceYear, 2026); assert.equal(data.rows[1].isProjection, true);
+  assert.equal(data.rows.reduce((s, r) => s + r.confirmed, 0), 0);
+});
+test('explicit reference-class destination maps to projection but a grade alone stays unallocated', () => {
+  const data = build({ classes: [cls({ _id: 'reference', schoolYear: 2026 })],
+    requests: [request(1, { targetClassId: 'reference' }), request(2, { targetClassId: null, targetGradeName: '1º Ano' })] });
+  assert.equal(data.rows[0].pending, 1); assert.equal(data.unallocated.length, 1);
+  assert.equal(data.unallocated[0].studentId, 's2');
+});
+test('8 confirmed + 5 reenrollments + 3 Web + 2 approved = 18 projected and 7 free', () => {
+  const registrations = Array.from({ length: 3 }, (_, i) => ({ _id: `web${i}`, academicYearTo: 2027, status: 'PENDING', selectedClassId: 'c', studentData: { fullName: `Candidato ${i}`, birthDate: '2020-01-01' } }));
+  const row = build({ classes: [cls({ capacity: 25 })], enrollments: Array.from({ length: 8 }, (_, i) => enrollment(i)),
+    requests: [...Array.from({ length: 5 }, (_, i) => request(i + 8)), request(20, { status: 'APPROVED' }), request(21, { status: 'APPROVED' })], registrations }).rows[0];
+  assert.deepEqual([row.confirmed, row.pending, row.approved, row.projected, row.available, row.afterPending, row.occupancy, row.reEnrollmentPending, row.webPending], [8, 8, 2, 18, 17, 7, 32, 5, 3]);
+});
+test('Web needs reliable year, no date inference; grade only is unallocated; rejected ignored', () => {
+  const data = build({ registrations: [
+    { _id: 'unknown', status: 'PENDING', createdAt: '2026-10-15', studentData: { intendedGrade: '1º Ano' } },
+    { _id: 'current', status: 'PENDING', academicYearTo: 2026, selectedClassId: 'c' },
+    { _id: 'grade', status: 'PENDING', academicYearTo: 2027, studentData: { intendedGrade: '1º Ano' } },
+    { _id: 'legacy', status: 'PENDING', selectedClassId: 'c' },
+    { _id: 'rejected', status: 'REJECTED', academicYearTo: 2027, selectedClassId: 'c' },
+  ] });
+  assert.equal(data.rows[0].pending, 1); assert.equal(data.diagnostics.webUnknownYear, 1);
+  assert.equal(data.unallocated.length, 1); assert.equal(data.unallocated[0].requestId, 'grade');
+});
+test('cross-source student deduplication, approved demand precedence, and enrollment wins', () => {
+  const person = { ...student(1), cpf: '52998224725' };
+  const registrations = [{ _id: 'web', status: 'PENDING', academicYearTo: 2027, selectedClassId: 'c', studentData: { cpf: '529.982.247-25' } }];
+  const data = build({ students: [person], requests: [request(1, { status: 'APPROVED', studentId: person })], registrations });
+  assert.equal(data.rows[0].approved, 1); assert.equal(data.rows[0].pending, 0); assert.equal(data.diagnostics.duplicates, 1);
+  const effective = build({ students: [person], enrollments: [enrollment(1, { student: person })], registrations });
+  assert.equal(effective.rows[0].confirmed, 1); assert.equal(effective.rows[0].pending, 0);
+});
+test('unallocated approval remains visible and does not consume any class capacity', () => {
+  const data = build({ requests: [request(1, { status: 'APPROVED', targetClassId: null })] });
+  assert.equal(data.rows[0].projected, 0); assert.equal(data.diagnostics.approvedWithoutEnrollment, 1);
+  assert.equal(data.unallocated[0].status, 'APPROVED');
+});
+test('cancelled destination configuration is not resurrected from the reference year', () => {
+  assert.equal(build({ classes: [cls({ schoolYear: 2026 }), cls({ _id: 'destination', status: 'Cancelada' })] }).rows.length, 0);
+});
+test('destination configuration can change grade and capacity without duplicate reference class', () => {
+  const rows = build({ classes: [cls({ _id: 'old', schoolYear: 2026, grade: 'legacy' }), cls({ grade: 'normalized', capacity: 25 })] }).rows;
+  assert.equal(rows.length, 1); assert.equal(rows[0].capacity, 25);
+});
+test('Web without CPF matches confirmed school student by normalized name and birthdate', () => {
+  const person = { ...student(1), fullName: 'José Silva', birthDate: '2018-01-02', cpf: '52998224725' };
+  const data = build({ enrollments: [enrollment(1, { student: person })], registrations: [{ _id: 'web', status: 'PENDING', academicYearTo: 2027, selectedClassId: 'c', studentData: { fullName: ' JOSE  SILVA ', birthDate: '2018-01-02' } }] });
+  assert.equal(data.rows[0].confirmed, 1); assert.equal(data.rows[0].pending, 0);
+});
+test('draft enrollment is not confirmed and does not hide an approved request awaiting effectivation', () => {
+  const row = build({ enrollments: [enrollment(1, { status: 'Pendente' })], requests: [request(1, { status: 'APPROVED' })] }).rows[0];
+  assert.equal(row.confirmed, 0); assert.equal(row.approved, 1); assert.equal(row.projected, 1);
 });

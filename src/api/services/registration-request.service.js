@@ -108,6 +108,7 @@ function buildPublicClassPayload(classDoc, availabilityStatus) {
   return {
     id: String(classDoc._id),
     name: classDoc.name,
+    schoolYear: classDoc.schoolYear,
     educationLevel: classDoc.level || null,
     grade: classDoc.grade || null,
     shift: classDoc.shift || null,
@@ -122,6 +123,7 @@ function buildSelectedClassSnapshot(publicClass) {
   return {
     id: publicClass.id,
     name: publicClass.name,
+    schoolYear: publicClass.schoolYear,
     educationLevel: publicClass.educationLevel,
     grade: publicClass.grade,
     shift: publicClass.shift,
@@ -554,10 +556,17 @@ class RegistrationRequestService {
 
     const normalizedStudentData = normalizeStudentData(studentData || {}, registrationType);
     const normalizedTutorData = normalizeTutorData(tutorData, registrationType);
+    const requestedYear = data.academicYearTo == null ? null : Number(data.academicYearTo);
+    if (requestedYear != null && (!Number.isInteger(requestedYear) || requestedYear < 1900 || requestedYear > 2200)) {
+      throw createHttpError('Informe um ano letivo de destino valido.', 400);
+    }
 
     let selectedClass = null;
     if (selectedClassId) {
       selectedClass = await this._getSelectableClassOrThrow(selectedClassId, school_id);
+    }
+    if (selectedClass && requestedYear != null && selectedClass.classDoc.schoolYear !== requestedYear) {
+      throw createHttpError('A turma selecionada nao pertence ao ano letivo solicitado.', 409);
     }
 
     if (selectedEnrollmentOfferId && !selectedClass) {
@@ -583,6 +592,7 @@ class RegistrationRequestService {
     }
 
     const newRequest = new RegistrationRequest({
+      academicYearTo: requestedYear ?? selectedClass?.classDoc?.schoolYear,
       school_id,
       registrationType,
       studentData: normalizedStudentData,
@@ -752,6 +762,9 @@ class RegistrationRequestService {
       if (selectedClassId) {
         selectedClass = await this._getSelectableClassOrThrow(selectedClassId, schoolId);
       }
+      if (selectedClass && request.academicYearTo && selectedClass.classDoc.schoolYear !== request.academicYearTo) {
+        throw createHttpError('A turma selecionada nao pertence ao ano letivo solicitado.', 409);
+      }
 
       const selectedOfferId =
         options.finalSelectedEnrollmentOfferId || request.selectedEnrollmentOfferId || null;
@@ -909,6 +922,8 @@ class RegistrationRequestService {
       }
 
       request.status = 'APPROVED';
+      request.approvedStudentId = createdStudent._id;
+      if (!request.academicYearTo && selectedClass) request.academicYearTo = selectedClass.classDoc.schoolYear;
       request.reviewedBy = userId;
       await request.save();
 
