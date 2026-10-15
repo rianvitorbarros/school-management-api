@@ -29,6 +29,14 @@ test('a published grade price is shared across shifts without changing the stude
     assert.equal(price.versionId, 'legacy-price');
   });
 });
+test('a canonical published grade takes precedence over a conflicting legacy grade alias', async () => {
+  const canonical = { ...common, _id: 'canonical-first-year', level: 'Ensino Fundamental I', grade: '1º Ano', shift: 'Vespertino', publishedCents: 45000 };
+  const legacyAlias = { ...canonical, _id: 'legacy-first-year', grade: '1° ANO', shift: 'Matutino', publishedCents: 35000 };
+  await withPlans([canonical, legacyAlias], async () => {
+    const price = await service.publishedForDestination('school', 2027, { level: canonical.level, grade: '1º Ano', shift: canonical.shift });
+    assert.deepEqual(price, { value: 450, cents: 45000, versionId: 'canonical-first-year', version: 2 });
+  });
+});
 test('draft-only and conflicting publications cannot provide an official common price', async () => {
   await withPlans([{ ...common, publishedCents: null, draftCents: 35000 }], async () => {
     assert.equal(await service.publishedForDestination('school', 2027, { level: common.level, grade: '2º Período', shift: 'Vespertino' }), null);

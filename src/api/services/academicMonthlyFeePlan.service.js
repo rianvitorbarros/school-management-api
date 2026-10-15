@@ -136,11 +136,18 @@ class AcademicMonthlyFeePlanService {
     const numbered = candidates.filter((item) => normalizeGrade(item.grade) === canonicalGrade);
     const applicable = numbered.length ? numbered : isNumberedPeriod(canonicalGrade)
       ? candidates.filter((item) => normalizeGrade(item.grade) === 'PERIODO') : [];
-    const amounts = new Set(applicable.map((item) => item.publishedCents));
+    // A legacy catalogue can contain raw aliases such as "1° ANO" alongside
+    // the canonical "1º Ano" plan. Once the canonical record has been
+    // published, it is the authoritative destination configuration. Keeping
+    // an older alias from blocking the enrolment avoids a false "fee pending"
+    // state while still refusing genuinely conflicting canonical plans.
+    const canonical = applicable.filter((item) => String(item.grade || '').trim() === canonicalGrade);
+    const resolved = canonical.length ? canonical : applicable;
+    const amounts = new Set(resolved.map((item) => item.publishedCents));
     // Missing or conflicting publications never authorize a guessed fee.
     if (amounts.size !== 1) return null;
-    const selected = applicable.find((item) => item.shift === shift)
-      || applicable.slice().sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0))[0];
+    const selected = resolved.find((item) => item.shift === shift)
+      || resolved.slice().sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0))[0];
     return { value: money(selected.publishedCents), cents: selected.publishedCents, versionId: String(selected._id), version: selected.publishedVersion };
   }
 }
