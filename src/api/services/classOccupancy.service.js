@@ -6,6 +6,7 @@ const Student = require('../models/student.model');
 const Invoice = require('../models/invoice.model');
 const School = require('../models/school.model');
 const { normalizeName, normalizeCpf, isValidCpf, buildBirthDateKey } = require('../utils/guardianAccess.util');
+const { normalizeAcademicGrade } = require('../utils/academicGrade.util');
 
 const id = value => String(value?._id || value || '');
 const error = (message, statusCode) => Object.assign(new Error(message), { statusCode });
@@ -101,27 +102,39 @@ function buildOccupancy({ classes, enrollments, requests, registrations = [], st
     if (r.source === 'web' && studentById.get(studentId)?.isActive === false) { diagnostics.invalid++; continue; }
     diagnostics[r.source === 'web' ? 'webConsidered' : 'reEnrollmentConsidered']++;
     if (r.status === 'APPROVED') diagnostics.approvedWithoutEnrollment++;
-    if (r.source === 'reEnrollment' && r.status === 'PENDING' && blocked.has(studentId)) { diagnostics.blocked++; continue; }
+    const financialBlocked = r.source === 'reEnrollment' && r.status === 'PENDING' && blocked.has(studentId);
+    if (financialBlocked) diagnostics.blocked++;
     const targetId = id(r.source === 'web' ? r.selectedClassId : r.targetClassId);
-    const row = byClass.get(targetId) || byClass.get(resolved.aliases.get(targetId));
-    // A grade/shift alone is deliberately never assigned to A/B/C.
+    let row = byClass.get(targetId) || byClass.get(resolved.aliases.get(targetId));
+    const sourceClass = classesById.get(id(r.currentClassId || r.currentClassSnapshot?.id || r.currentEnrollmentId?.class));
+    const targetShift = r.targetShiftName?.trim() || r.currentClassSnapshot?.shift || sourceClass?.shift || '';
+    let resolution = row ? 'explicit' : 'unresolved';
+    // Planning only: the user authorized retaining the source shift. A unique
+    // destination stage/level/shift may resolve demand, never create enrollment.
+    if (!targetId && r.source === 'reEnrollment' && targetShift && r.targetGradeName && r.targetLevelName) {
+      const candidates = rows.filter(c => normalizeAcademicGrade(c.grade, c.name) === normalizeAcademicGrade(r.targetGradeName)
+        && normalizeName(c.level) === normalizeName(r.targetLevelName) && normalizeName(c.shift) === normalizeName(targetShift));
+      if (candidates.length === 1) { row = candidates[0]; resolution = 'stageShift'; }
+    }
     const person = { studentId: studentId || null, name: r.studentId?.fullName || r.studentNameSnapshot || r.studentData?.fullName || '',
-      source: r.source, status: r.status, requestId: id(r), createdAt: r.createdAt,
+      source: r.source, status: r.status, requestId: id(r), createdAt: r.createdAt, financialBlocked, resolution,
       currentClass: r.currentClassSnapshot?.name || '', targetClass: row?.name || '',
       targetGrade: r.targetGradeName || r.studentData?.intendedGrade || r.selectedClassSnapshot?.grade || '',
       targetLevel: r.targetLevelName || r.selectedClassSnapshot?.educationLevel || '',
-      targetShift: r.targetShiftName || r.selectedClassSnapshot?.shift || '' };
+      targetShift: r.source === 'reEnrollment' ? targetShift : r.selectedClassSnapshot?.shift || '' };
     if (!row) { diagnostics.unresolved++; unallocated.push(person); continue; }
     row[r.status === 'APPROVED' ? 'approvedStudents' : 'pendingStudents'].push(person);
   }
   return { rows: rows.map(row => {
     const confirmed = row.confirmedStudents.length, pending = row.pendingStudents.length, approved = row.approvedStudents.length, capacity = row.capacity;
+    const blockedPending = row.pendingStudents.filter(s => s.financialBlocked).length;
+    const eligiblePending = pending - blockedPending;
     const occupancy = capacity == null ? null : confirmed / capacity * 100;
-    return { ...row, confirmed, pending, approved,
+    return { ...row, confirmed, pending, approved, blockedPending, eligiblePending,
       reEnrollmentPending: row.pendingStudents.filter(s => s.source === 'reEnrollment').length,
       webPending: row.pendingStudents.filter(s => s.source === 'web').length,
       available: capacity == null ? null : capacity - confirmed,
-      projected: confirmed + pending + approved, afterPending: capacity == null ? null : capacity - confirmed - pending - approved,
+      projected: confirmed + eligiblePending + approved, afterPending: capacity == null ? null : capacity - confirmed - eligiblePending - approved,
       occupancy, situation: occupancy == null ? 'Sem capacidade' : occupancy >= 100 ? 'Lotada' : occupancy >= 85 ? 'Próxima do limite' : 'Disponível' };
   }), diagnostics, unallocated };
 }
@@ -137,9 +150,9 @@ async function load(schoolId, academicYear) {
     Enrollment.find({ school_id: schoolId, academicYear: year }).select('student class status academicYear updatedAt')
       .populate({ path: 'student', match: { school_id: schoolId }, select: 'fullName isActive cpf birthDate' }).lean(),
     Request.find({ school_id: schoolId, academicYearTo: year, status: { $in: ['PENDING', 'APPROVED'] } })
-      .select('studentId studentNameSnapshot currentEnrollmentId targetClassId currentClassSnapshot targetGradeName targetLevelName targetShiftName status academicYearTo createdAt')
+      .select('studentId studentNameSnapshot currentEnrollmentId currentClassId targetClassId currentClassSnapshot targetGradeName targetLevelName targetShiftName status academicYearTo createdAt')
       .populate({ path: 'studentId', match: { school_id: schoolId }, select: 'fullName isActive cpf birthDate' })
-      .populate({ path: 'currentEnrollmentId', match: { school_id: schoolId }, select: 'status' }).lean(),
+      .populate({ path: 'currentEnrollmentId', match: { school_id: schoolId }, select: 'status class' }).lean(),
     Registration.find({ school_id: schoolId, status: { $in: ['PENDING', 'APPROVED'] }, $or: [{ academicYearTo: year }, { academicYearTo: { $exists: false } }, { academicYearTo: null }] })
       .select('studentData.fullName studentData.cpf studentData.birthDate studentData.intendedGrade academicYearTo selectedClassId selectedClassSnapshot approvedStudentId status createdAt').lean(),
     Class.distinct('schoolYear', { school_id: schoolId }),

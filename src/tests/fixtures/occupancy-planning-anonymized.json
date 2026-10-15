@@ -1,0 +1,1328 @@
+{
+  "year": 2027,
+  "classes": [
+    {
+      "_id": "c0",
+      "name": "1 ano C",
+      "grade": "1",
+      "level": "Ensino Fundamental I",
+      "shift": "Vespertino",
+      "capacity": 20,
+      "schoolYear": 2026,
+      "status": "Ativa"
+    },
+    {
+      "_id": "c1",
+      "name": "1° ANO A",
+      "grade": "1° ANO",
+      "level": "Ensino Fundamental I",
+      "shift": "Matutino",
+      "capacity": 20,
+      "schoolYear": 2026,
+      "status": "Ativa"
+    },
+    {
+      "_id": "c2",
+      "name": "1° ANO B",
+      "grade": "1° ANO",
+      "level": "Ensino Fundamental I",
+      "shift": "Vespertino",
+      "capacity": 35,
+      "schoolYear": 2026,
+      "status": "Ativa"
+    },
+    {
+      "_id": "c3",
+      "name": "2° ANO A",
+      "grade": "2° ANO",
+      "level": "Ensino Fundamental I",
+      "shift": "Matutino",
+      "capacity": 20,
+      "schoolYear": 2026,
+      "status": "Ativa"
+    },
+    {
+      "_id": "c4",
+      "name": "2° ANO B",
+      "grade": "2° ANO",
+      "level": "Ensino Fundamental I",
+      "shift": "Vespertino",
+      "capacity": 35,
+      "schoolYear": 2026,
+      "status": "Ativa"
+    },
+    {
+      "_id": "c5",
+      "name": "3° ANO A",
+      "grade": "3° ANO",
+      "level": "Ensino Fundamental I",
+      "shift": "Matutino",
+      "capacity": 20,
+      "schoolYear": 2026,
+      "status": "Ativa"
+    },
+    {
+      "_id": "c6",
+      "name": "3° ANO B",
+      "grade": "3° ANO",
+      "level": "Ensino Fundamental I",
+      "shift": "Vespertino",
+      "capacity": 21,
+      "schoolYear": 2026,
+      "status": "Ativa"
+    },
+    {
+      "_id": "c7",
+      "name": "4° ANO A",
+      "grade": "4° ANO",
+      "level": "Ensino Fundamental I",
+      "shift": "Matutino",
+      "capacity": 22,
+      "schoolYear": 2026,
+      "status": "Ativa"
+    },
+    {
+      "_id": "c8",
+      "name": "4° ANO B",
+      "grade": "4° ANO",
+      "level": "Ensino Fundamental I",
+      "shift": "Vespertino",
+      "capacity": 20,
+      "schoolYear": 2026,
+      "status": "Ativa"
+    },
+    {
+      "_id": "c9",
+      "name": "5° ANO A",
+      "grade": "5° ANO",
+      "level": "Ensino Fundamental I",
+      "shift": "Matutino",
+      "capacity": 25,
+      "schoolYear": 2026,
+      "status": "Ativa"
+    },
+    {
+      "_id": "c10",
+      "name": "5° ANO B",
+      "grade": "5° ANO",
+      "level": "Ensino Fundamental I",
+      "shift": "Vespertino",
+      "capacity": 20,
+      "schoolYear": 2026,
+      "status": "Ativa"
+    },
+    {
+      "_id": "c11",
+      "name": "6 ANO B",
+      "grade": "6° ANO",
+      "level": "Ensino Fundamental II",
+      "shift": "Vespertino",
+      "capacity": 20,
+      "schoolYear": 2026,
+      "status": "Ativa"
+    },
+    {
+      "_id": "c12",
+      "name": "6° ANO A",
+      "grade": "6° ANO",
+      "level": "Ensino Fundamental II",
+      "shift": "Matutino",
+      "capacity": 25,
+      "schoolYear": 2026,
+      "status": "Ativa"
+    },
+    {
+      "_id": "c13",
+      "name": "7º ano A",
+      "grade": ".",
+      "level": "Ensino Fundamental II",
+      "shift": "Matutino",
+      "capacity": null,
+      "schoolYear": 2026,
+      "status": "Ativa"
+    },
+    {
+      "_id": "c14",
+      "name": "8° ANO A",
+      "grade": "8° ANO",
+      "level": "Ensino Fundamental II",
+      "shift": "Matutino",
+      "capacity": 20,
+      "schoolYear": 2026,
+      "status": "Ativa"
+    },
+    {
+      "_id": "c15",
+      "name": "I PERIODO A",
+      "grade": "PERIODO",
+      "level": "Educação Infantil",
+      "shift": "Matutino",
+      "capacity": 20,
+      "schoolYear": 2026,
+      "status": "Ativa"
+    },
+    {
+      "_id": "c16",
+      "name": "I PERIODO B",
+      "grade": "PERIODO",
+      "level": "Educação Infantil",
+      "shift": "Vespertino",
+      "capacity": 20,
+      "schoolYear": 2026,
+      "status": "Ativa"
+    },
+    {
+      "_id": "c17",
+      "name": "II PERIODO A",
+      "grade": "PERIODO",
+      "level": "Educação Infantil",
+      "shift": "Matutino",
+      "capacity": 20,
+      "schoolYear": 2026,
+      "status": "Ativa"
+    },
+    {
+      "_id": "c18",
+      "name": "II PERIODO B",
+      "grade": "PERIODO",
+      "level": "Educação Infantil",
+      "shift": "Vespertino",
+      "capacity": 25,
+      "schoolYear": 2026,
+      "status": "Ativa"
+    },
+    {
+      "_id": "c19",
+      "name": "MATERNAL",
+      "grade": "MATERNAL",
+      "level": "Educação Infantil",
+      "shift": "Matutino",
+      "capacity": 15,
+      "schoolYear": 2026,
+      "status": "Ativa"
+    },
+    {
+      "_id": "c20",
+      "name": "Maternal B",
+      "grade": "Maternal",
+      "level": "Educação Infantil",
+      "shift": "Vespertino",
+      "capacity": 20,
+      "schoolYear": 2026,
+      "status": "Ativa"
+    }
+  ],
+  "requests": [
+    {
+      "_id": "r0",
+      "studentId": {
+        "_id": "s0",
+        "fullName": "Aluno 0",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c2",
+        "name": "1° ANO B",
+        "level": "Ensino Fundamental I",
+        "grade": "1º Ano",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "2º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r1",
+      "studentId": {
+        "_id": "s1",
+        "fullName": "Aluno 1",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c10",
+        "name": "5° ANO B",
+        "level": "Ensino Fundamental I",
+        "grade": "5º Ano",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "6º Ano",
+      "targetLevelName": "Ensino Fundamental II",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r2",
+      "studentId": {
+        "_id": "s2",
+        "fullName": "Aluno 2",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c15",
+        "name": "I PERIODO A",
+        "level": "Educação Infantil",
+        "grade": "1º Período",
+        "shift": "Matutino"
+      },
+      "targetGradeName": "2º Período",
+      "targetLevelName": "Educação Infantil",
+      "targetShiftName": "Matutino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r3",
+      "studentId": {
+        "_id": "s3",
+        "fullName": "Aluno 3",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c16",
+        "name": "I PERIODO B",
+        "level": "Educação Infantil",
+        "grade": "1º Período",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "2º Período",
+      "targetLevelName": "Educação Infantil",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r4",
+      "studentId": {
+        "_id": "s4",
+        "fullName": "Aluno 4",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c4",
+        "name": "2° ANO B",
+        "level": "Ensino Fundamental I",
+        "grade": "2º Ano",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "3º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r5",
+      "studentId": {
+        "_id": "s5",
+        "fullName": "Aluno 5",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c5",
+        "name": "3° ANO A",
+        "level": "Ensino Fundamental I",
+        "grade": "3º Ano",
+        "shift": "Matutino"
+      },
+      "targetGradeName": "4º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Matutino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r6",
+      "studentId": {
+        "_id": "s6",
+        "fullName": "Aluno 6",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c15",
+        "name": "I PERIODO A",
+        "level": "Educação Infantil",
+        "grade": "1º Período",
+        "shift": "Matutino"
+      },
+      "targetGradeName": "2º Período",
+      "targetLevelName": "Educação Infantil",
+      "targetShiftName": "Matutino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r7",
+      "studentId": {
+        "_id": "s7",
+        "fullName": "Aluno 7",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c0",
+        "name": "1 ano C",
+        "level": "Ensino Fundamental I",
+        "grade": "1º Ano",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "2º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r8",
+      "studentId": {
+        "_id": "s8",
+        "fullName": "Aluno 8",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c11",
+        "name": "6 ANO B",
+        "level": "Ensino Fundamental II",
+        "grade": "6º Ano",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "7º Ano",
+      "targetLevelName": "Ensino Fundamental II",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r9",
+      "studentId": {
+        "_id": "s9",
+        "fullName": "Aluno 9",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c7",
+        "name": "4° ANO A",
+        "level": "Ensino Fundamental I",
+        "grade": "4º Ano",
+        "shift": "Matutino"
+      },
+      "targetGradeName": "5º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Matutino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r10",
+      "studentId": {
+        "_id": "s10",
+        "fullName": "Aluno 10",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c15",
+        "name": "I PERIODO A",
+        "level": "Educação Infantil",
+        "grade": "1º Período",
+        "shift": "Matutino"
+      },
+      "targetGradeName": "2º Período",
+      "targetLevelName": "Educação Infantil",
+      "targetShiftName": "Matutino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r11",
+      "studentId": {
+        "_id": "s11",
+        "fullName": "Aluno 11",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c12",
+        "name": "6° ANO A",
+        "level": "Ensino Fundamental II",
+        "grade": "6º Ano",
+        "shift": "Matutino"
+      },
+      "targetGradeName": "7º Ano",
+      "targetLevelName": "Ensino Fundamental II",
+      "targetShiftName": "Matutino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r12",
+      "studentId": {
+        "_id": "s12",
+        "fullName": "Aluno 12",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c19",
+        "name": "MATERNAL",
+        "level": "Educação Infantil",
+        "grade": "Maternal",
+        "shift": "Matutino"
+      },
+      "targetGradeName": "PERIODO",
+      "targetLevelName": "Educação Infantil",
+      "targetShiftName": "Matutino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r13",
+      "studentId": {
+        "_id": "s13",
+        "fullName": "Aluno 13",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c20",
+        "name": "Maternal B",
+        "level": "Educação Infantil",
+        "grade": "Maternal",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "PERIODO",
+      "targetLevelName": "Educação Infantil",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r14",
+      "studentId": {
+        "_id": "s14",
+        "fullName": "Aluno 14",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c2",
+        "name": "1° ANO B",
+        "level": "Ensino Fundamental I",
+        "grade": "1º Ano",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "2º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r15",
+      "studentId": {
+        "_id": "s15",
+        "fullName": "Aluno 15",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c16",
+        "name": "I PERIODO B",
+        "level": "Educação Infantil",
+        "grade": "1º Período",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "2º Período",
+      "targetLevelName": "Educação Infantil",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r16",
+      "studentId": {
+        "_id": "s16",
+        "fullName": "Aluno 16",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c3",
+        "name": "2° ANO A",
+        "level": "Ensino Fundamental I",
+        "grade": "2º Ano",
+        "shift": "Matutino"
+      },
+      "targetGradeName": "3º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Matutino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r17",
+      "studentId": {
+        "_id": "s17",
+        "fullName": "Aluno 17",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c2",
+        "name": "1° ANO B",
+        "level": "Ensino Fundamental I",
+        "grade": "1º Ano",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "2º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r18",
+      "studentId": {
+        "_id": "s18",
+        "fullName": "Aluno 18",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c8",
+        "name": "4° ANO B",
+        "level": "Ensino Fundamental I",
+        "grade": "4º Ano",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "5º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r19",
+      "studentId": {
+        "_id": "s19",
+        "fullName": "Aluno 19",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c6",
+        "name": "3° ANO B",
+        "level": "Ensino Fundamental I",
+        "grade": "3° ANO",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "4º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r20",
+      "studentId": {
+        "_id": "s20",
+        "fullName": "Aluno 20",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c0",
+        "name": "1 ano C",
+        "level": "Ensino Fundamental I",
+        "grade": "1",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "2º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r21",
+      "studentId": {
+        "_id": "s21",
+        "fullName": "Aluno 21",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c2",
+        "name": "1° ANO B",
+        "level": "Ensino Fundamental I",
+        "grade": "1° ANO",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "2º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r22",
+      "studentId": {
+        "_id": "s22",
+        "fullName": "Aluno 22",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c8",
+        "name": "4° ANO B",
+        "level": "Ensino Fundamental I",
+        "grade": "4° ANO",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "5º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r23",
+      "studentId": {
+        "_id": "s23",
+        "fullName": "Aluno 23",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c20",
+        "name": "Maternal B",
+        "level": "Educação Infantil",
+        "grade": "Maternal",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "PERIODO",
+      "targetLevelName": "Educação Infantil",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r24",
+      "studentId": {
+        "_id": "s24",
+        "fullName": "Aluno 24",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c8",
+        "name": "4° ANO B",
+        "level": "Ensino Fundamental I",
+        "grade": "4° ANO",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "5º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r25",
+      "studentId": {
+        "_id": "s25",
+        "fullName": "Aluno 25",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c4",
+        "name": "2° ANO B",
+        "level": "Ensino Fundamental I",
+        "grade": "2° ANO",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "3º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r26",
+      "studentId": {
+        "_id": "s26",
+        "fullName": "Aluno 26",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c13",
+        "name": "7º ano A",
+        "level": "Ensino Fundamental II",
+        "grade": ".",
+        "shift": "Matutino"
+      },
+      "targetGradeName": "8º Ano",
+      "targetLevelName": "Ensino Fundamental II",
+      "targetShiftName": "Matutino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r27",
+      "studentId": {
+        "_id": "s27",
+        "fullName": "Aluno 27",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c8",
+        "name": "4° ANO B",
+        "level": "Ensino Fundamental I",
+        "grade": "4° ANO",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "5º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r28",
+      "studentId": {
+        "_id": "s28",
+        "fullName": "Aluno 28",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c0",
+        "name": "1 ano C",
+        "level": "Ensino Fundamental I",
+        "grade": "1",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "2º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r29",
+      "studentId": {
+        "_id": "s29",
+        "fullName": "Aluno 29",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c5",
+        "name": "3° ANO A",
+        "level": "Ensino Fundamental I",
+        "grade": "3° ANO",
+        "shift": "Matutino"
+      },
+      "targetGradeName": "4º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Matutino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r30",
+      "studentId": {
+        "_id": "s30",
+        "fullName": "Aluno 30",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c2",
+        "name": "1° ANO B",
+        "level": "Ensino Fundamental I",
+        "grade": "1° ANO",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "2º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r31",
+      "studentId": {
+        "_id": "s31",
+        "fullName": "Aluno 31",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c7",
+        "name": "4° ANO A",
+        "level": "Ensino Fundamental I",
+        "grade": "4° ANO",
+        "shift": "Matutino"
+      },
+      "targetGradeName": "5º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Matutino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r32",
+      "studentId": {
+        "_id": "s32",
+        "fullName": "Aluno 32",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c8",
+        "name": "4° ANO B",
+        "level": "Ensino Fundamental I",
+        "grade": "4° ANO",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "5º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r33",
+      "studentId": {
+        "_id": "s33",
+        "fullName": "Aluno 33",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c7",
+        "name": "4° ANO A",
+        "level": "Ensino Fundamental I",
+        "grade": "4° ANO",
+        "shift": "Matutino"
+      },
+      "targetGradeName": "5º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Matutino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r34",
+      "studentId": {
+        "_id": "s34",
+        "fullName": "Aluno 34",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c1",
+        "name": "1° ANO A",
+        "level": "Ensino Fundamental I",
+        "grade": "1° ANO",
+        "shift": "Matutino"
+      },
+      "targetGradeName": "2º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Matutino",
+      "academicYearTo": 2027,
+      "status": "PENDING"
+    },
+    {
+      "_id": "r35",
+      "studentId": {
+        "_id": "s35",
+        "fullName": "Aluno 35",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c3",
+        "name": "2° ANO A",
+        "level": "Ensino Fundamental I",
+        "grade": "2° ANO",
+        "shift": "Matutino"
+      },
+      "targetGradeName": "3º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Matutino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r36",
+      "studentId": {
+        "_id": "s36",
+        "fullName": "Aluno 36",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c7",
+        "name": "4° ANO A",
+        "level": "Ensino Fundamental I",
+        "grade": "4° ANO",
+        "shift": "Matutino"
+      },
+      "targetGradeName": "5º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Matutino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r37",
+      "studentId": {
+        "_id": "s37",
+        "fullName": "Aluno 37",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c6",
+        "name": "3° ANO B",
+        "level": "Ensino Fundamental I",
+        "grade": "3° ANO",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "4º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r38",
+      "studentId": {
+        "_id": "s38",
+        "fullName": "Aluno 38",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c2",
+        "name": "1° ANO B",
+        "level": "Ensino Fundamental I",
+        "grade": "1° ANO",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "2º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r39",
+      "studentId": {
+        "_id": "s39",
+        "fullName": "Aluno 39",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c1",
+        "name": "1° ANO A",
+        "level": "Ensino Fundamental I",
+        "grade": "1° ANO",
+        "shift": "Matutino"
+      },
+      "targetGradeName": "2º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Matutino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r40",
+      "studentId": {
+        "_id": "s40",
+        "fullName": "Aluno 40",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c2",
+        "name": "1° ANO B",
+        "level": "Ensino Fundamental I",
+        "grade": "1° ANO",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "2º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "PENDING"
+    },
+    {
+      "_id": "r41",
+      "studentId": {
+        "_id": "s41",
+        "fullName": "Aluno 41",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c1",
+        "name": "1° ANO A",
+        "level": "Ensino Fundamental I",
+        "grade": "1° ANO",
+        "shift": "Matutino"
+      },
+      "targetGradeName": "2º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Matutino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r42",
+      "studentId": {
+        "_id": "s42",
+        "fullName": "Aluno 42",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c0",
+        "name": "1 ano C",
+        "level": "Ensino Fundamental I",
+        "grade": "1",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "2º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "PENDING"
+    },
+    {
+      "_id": "r43",
+      "studentId": {
+        "_id": "s43",
+        "fullName": "Aluno 43",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c8",
+        "name": "4° ANO B",
+        "level": "Ensino Fundamental I",
+        "grade": "4° ANO",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "5º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r44",
+      "studentId": {
+        "_id": "s44",
+        "fullName": "Aluno 44",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c8",
+        "name": "4° ANO B",
+        "level": "Ensino Fundamental I",
+        "grade": "4° ANO",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "5º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r45",
+      "studentId": {
+        "_id": "s45",
+        "fullName": "Aluno 45",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c2",
+        "name": "1° ANO B",
+        "level": "Ensino Fundamental I",
+        "grade": "1° ANO",
+        "shift": "Vespertino"
+      },
+      "targetGradeName": "2º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Vespertino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r46",
+      "studentId": {
+        "_id": "s46",
+        "fullName": "Aluno 46",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c3",
+        "name": "2° ANO A",
+        "level": "Ensino Fundamental I",
+        "grade": "2° ANO",
+        "shift": "Matutino"
+      },
+      "targetGradeName": "3º Ano",
+      "targetLevelName": "Ensino Fundamental I",
+      "targetShiftName": "Matutino",
+      "academicYearTo": 2027,
+      "status": "APPROVED"
+    },
+    {
+      "_id": "r47",
+      "studentId": {
+        "_id": "s47",
+        "fullName": "Aluno 47",
+        "isActive": true
+      },
+      "currentEnrollmentId": {
+        "status": "Ativa"
+      },
+      "currentClassSnapshot": {
+        "id": "c19",
+        "name": "MATERNAL",
+        "level": "Educação Infantil",
+        "grade": "MATERNAL",
+        "shift": "Matutino"
+      },
+      "targetGradeName": "PERIODO",
+      "targetLevelName": "Educação Infantil",
+      "targetShiftName": "Matutino",
+      "academicYearTo": 2027,
+      "status": "PENDING"
+    }
+  ],
+  "enrollments": [],
+  "blockedStudentIds": [
+    "s34",
+    "s40",
+    "s42",
+    "s47"
+  ]
+}

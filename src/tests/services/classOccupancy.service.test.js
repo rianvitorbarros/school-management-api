@@ -59,7 +59,7 @@ test('current-year students are not destination enrollments and other years are 
 test('missing capacity remains unknown, unresolved and financially blocked requests are diagnosed', () => {
   const data = build({ classes: [cls({ capacity: null })], requests: [request(1, { targetClassId: null }), request(2), request(3)], blockedStudentIds: ['s2'] });
   assert.equal(data.rows[0].capacity, null); assert.equal(data.rows[0].available, null); assert.equal(data.rows[0].occupancy, null);
-  assert.equal(data.rows[0].pending, 1); assert.equal(data.diagnostics.unresolved, 1); assert.equal(data.diagnostics.blocked, 1);
+  assert.equal(data.rows[0].pending, 2); assert.equal(data.rows[0].eligiblePending, 1); assert.equal(data.rows[0].projected, 1); assert.equal(data.diagnostics.unresolved, 1); assert.equal(data.diagnostics.blocked, 1);
 });
 test('no classes returns empty and cancelled classes are excluded', () => {
   assert.deepEqual(build({ classes: [] }).rows, []);
@@ -162,4 +162,28 @@ test('Web without CPF matches confirmed school student by normalized name and bi
 test('draft enrollment is not confirmed and does not hide an approved request awaiting effectivation', () => {
   const row = build({ enrollments: [enrollment(1, { status: 'Pendente' })], requests: [request(1, { status: 'APPROVED' })] }).rows[0];
   assert.equal(row.confirmed, 0); assert.equal(row.approved, 1); assert.equal(row.projected, 1);
+});
+test('unique destination grade/level/shift resolves planning and defaults missing shift to current class', () => {
+  const data = build({ classes: [cls({ grade: '2° ANO', level: 'Ensino Fundamental I', shift: 'Matutino' }), cls({ _id: 'evening', grade: '2° ANO', level: 'Ensino Fundamental I', shift: 'Vespertino' })], requests: [request(1, { targetClassId: null, targetGradeName: '2º Ano', targetLevelName: 'Ensino Fundamental I', targetShiftName: '', currentClassSnapshot: { shift: 'Matutino' } })] });
+  assert.equal(data.rows[0].pending, 1); assert.equal(data.rows[1].pending, 0);
+  assert.equal(data.rows[0].pendingStudents[0].resolution, 'stageShift');
+});
+test('explicit shift prevails; multiple classes in the same shift remain unallocated', () => {
+  const classes = [cls({ grade: '1º Ano', level: 'L', shift: 'Matutino' }), cls({ _id: 'b', name: '1º ANO B', grade: '1º Ano', level: 'L', shift: 'Matutino' })];
+  const r = request(1, { targetClassId: null, targetGradeName: '1º Ano', targetLevelName: 'L', targetShiftName: 'Matutino', currentClassSnapshot: { shift: 'Vespertino' } });
+  assert.equal(build({ classes, requests: [r] }).unallocated.length, 1);
+  assert.equal(build({ classes: [classes[0]], requests: [r] }).rows[0].pending, 1);
+  assert.equal(build({ classes: [classes[0]], requests: [{ ...r, targetShiftName: 'Vespertino' }] }).unallocated.length, 1);
+});
+test('anonymized production replay reconciles 44 approvals and four financially blocked pending requests', () => {
+  const input = require('../fixtures/occupancy-planning-anonymized.json');
+  const data = buildOccupancy(input);
+  assert.equal(data.rows.length, 21); assert.equal(data.rows.reduce((s,r) => s + (r.capacity || 0),0),443);
+  assert.equal(data.rows.reduce((s,r) => s + r.approved,0),40);
+  assert.equal(data.rows.reduce((s,r) => s + r.confirmed,0),0);
+  assert.equal(data.rows.reduce((s,r) => s + r.pending,0),3);
+  assert.equal(data.rows.reduce((s,r) => s + r.eligiblePending,0),0);
+  assert.equal(data.unallocated.filter(r => r.status === 'APPROVED').length,4);
+  assert.equal(data.unallocated.filter(r => r.status === 'PENDING').length,1);
+  assert.equal(data.diagnostics.blocked,4);
 });
