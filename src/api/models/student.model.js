@@ -153,6 +153,9 @@ const studentSchema = new Schema({
     gender: { type: String, required: true, enum: ['Masculino', 'Feminino', 'Outro'] },
     race: { type: String, required: true, enum: ['Branca', 'Preta', 'Parda', 'Amarela', 'Indígena', 'Prefiro não dizer'] },
     nationality: { type: String, required: true },
+    // Município/UF de nascimento, usado nos documentos escolares oficiais.
+    // É distinto de nacionalidade e opcional para preservar cadastros legados.
+    birthPlace: { type: String, trim: true, default: '' },
     
     profilePicture: {
         data: Buffer,
