@@ -6,6 +6,7 @@ const Class = require('../models/class.model');
 const Enrollment = require('../models/enrollment.model');
 const School = require('../models/school.model');
 const enrollmentOfferService = require('./enrollmentOffer.service');
+const AuditLog = require('../models/auditLog.model');
 const {
   isValidCpf,
   normalizeCpf,
@@ -31,6 +32,29 @@ function toPlainData(value) {
     return value.toObject({ depopulate: true });
   }
   return { ...value };
+}
+
+function mergeRequestData(current = {}, patch = {}) {
+  const base = toPlainData(current) || {};
+  const update = toPlainData(patch) || {};
+  const merged = { ...base, ...update };
+  for (const key of ['address', 'parents', 'healthInfo']) {
+    if (base[key] || update[key]) {
+      merged[key] = { ...(toPlainData(base[key]) || {}), ...(toPlainData(update[key]) || {}) };
+    }
+  }
+  if (base.parents || update.parents) {
+    merged.parents = { ...(toPlainData(base.parents) || {}), ...(toPlainData(update.parents) || {}) };
+    for (const parent of ['mother', 'father']) {
+      if (base.parents?.[parent] || update.parents?.[parent]) {
+        merged.parents[parent] = {
+          ...(toPlainData(base.parents?.[parent]) || {}),
+          ...(toPlainData(update.parents?.[parent]) || {}),
+        };
+      }
+    }
+  }
+  return merged;
 }
 
 function parseTimeToMinutes(value) {
@@ -624,26 +648,75 @@ class RegistrationRequestService {
     }).sort({ createdAt: -1 });
   }
 
-  async updateRequestData(requestId, schoolId, studentData, tutorData) {
+  async updateRequestData(requestId, schoolId, actorId, payload = {}) {
     const request = await RegistrationRequest.findOne({ _id: requestId, school_id: schoolId });
 
-    if (!request) throw new Error('Solicitacao nao encontrada.');
-    if (request.status !== 'PENDING') throw new Error('Apenas solicitacoes pendentes podem ser editadas.');
-
-    if (studentData) {
-      request.studentData = { ...(toPlainData(request.studentData) || {}), ...studentData };
+    if (!request) throw createHttpError('Solicitacao nao encontrada.', 404);
+    if (request.status !== 'PENDING') {
+      throw createHttpError('Apenas solicitacoes pendentes podem ser editadas.', 409);
     }
 
-    if (tutorData) {
-      request.tutorData = request.tutorData
-        ? { ...(toPlainData(request.tutorData) || {}), ...tutorData }
-        : tutorData;
+    const previous = request.toObject({ depopulate: true });
+    const studentData = payload.studentData;
+    const tutorData = payload.tutorData;
+
+    if (Object.prototype.hasOwnProperty.call(payload, 'academicYearTo')) {
+      const requestedYear = payload.academicYearTo == null || payload.academicYearTo === ''
+        ? null
+        : Number(payload.academicYearTo);
+      if (requestedYear != null && (!Number.isInteger(requestedYear) || requestedYear < 1900 || requestedYear > 2200)) {
+        throw createHttpError('Informe um ano letivo de destino valido.', 400);
+      }
+      if (request.selectedClassId && requestedYear != null) {
+        const selectedClass = await Class.findOne({ _id: request.selectedClassId, school_id: schoolId })
+          .select('schoolYear');
+        if (!selectedClass) throw createHttpError('Turma vinculada a solicitacao nao encontrada.', 409);
+        if (selectedClass.schoolYear !== requestedYear) {
+          throw createHttpError('A turma selecionada nao pertence ao ano letivo informado.', 409);
+        }
+      }
+      request.academicYearTo = requestedYear;
+    }
+
+    if (studentData && typeof studentData === 'object') {
+      request.studentData = normalizeStudentData(
+        mergeRequestData(request.studentData, studentData),
+        request.registrationType
+      );
+    }
+
+    if (tutorData && typeof tutorData === 'object') {
+      request.tutorData = normalizeTutorData(
+        mergeRequestData(request.tutorData, tutorData),
+        request.registrationType
+      );
     }
 
     request.markModified('studentData');
     if (tutorData) request.markModified('tutorData');
 
-    return await request.save();
+    const saved = await request.save();
+    await AuditLog.create({
+      school: schoolId,
+      actor: actorId,
+      entity: 'RegistrationRequest',
+      entityId: request._id,
+      action: 'UPDATE',
+      reason: 'REGISTRATION_REQUEST_EDITED_BEFORE_APPROVAL',
+      changes: {
+        previous: {
+          studentData: previous.studentData,
+          tutorData: previous.tutorData,
+          academicYearTo: previous.academicYearTo,
+        },
+        current: {
+          studentData: saved.toObject({ depopulate: true }).studentData,
+          tutorData: saved.toObject({ depopulate: true }).tutorData,
+          academicYearTo: saved.academicYearTo,
+        },
+      },
+    });
+    return saved;
   }
 
   async _findExistingTutor(tutorData, schoolId) {

@@ -2,6 +2,23 @@ const service = require('../services/registration-request.service');
 const appEmitter = require('../../loaders/eventEmitter');
 const AppNotificationService = require('../services/appNotification.service');
 
+const ensureRegistrationRequestEditorAccess = (user = {}) => {
+    const roles = [
+        ...(Array.isArray(user.roles) ? user.roles : []),
+        user.role,
+        user.profile,
+        user.userType,
+    ]
+        .map((role) => String(role || '').trim().toLowerCase())
+        .filter(Boolean);
+
+    if (!roles.some((role) => ['admin', 'coordenador', 'gestor', 'secretaria'].includes(role))) {
+        const error = new Error('Somente perfis administrativos podem editar solicitações de matrícula.');
+        error.statusCode = 403;
+        throw error;
+    }
+};
+
 const getStatusFromError = (error, fallback = 400) => {
     if (error && error.statusCode) return error.statusCode;
     if (error && error.name === 'ValidationError') return 400;
@@ -113,14 +130,14 @@ exports.listAll = async (req, res) => {
 exports.updateRequestData = async (req, res) => {
     try {
         const { requestId } = req.params;
-        const { schoolId } = req.user;
-        const { studentData, tutorData } = req.body;
+        const { schoolId, id: userId } = req.user;
+        ensureRegistrationRequestEditorAccess(req.user);
 
-        const result = await service.updateRequestData(requestId, schoolId, studentData, tutorData);
+        const result = await service.updateRequestData(requestId, schoolId, userId, req.body);
         return res.json({ message: 'Dados da solicitação atualizados.', request: result });
     } catch (error) {
         console.error('Erro updateRequestData:', error);
-        return res.status(400).json({ message: error.message || 'Erro ao atualizar dados.' });
+        return res.status(getStatusFromError(error, 400)).json({ message: error.message || 'Erro ao atualizar dados.' });
     }
 };
 
