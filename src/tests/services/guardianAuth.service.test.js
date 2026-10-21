@@ -13,6 +13,43 @@ const {
   sanitizeReasonText,
 } = require('../../api/utils/guardianAudit.util');
 
+test('revokes a temporary credential selected from the account and records the event', async () => {
+  const now = new Date('2026-04-07T10:00:00Z');
+  const account = {
+    _id: 'account-1', tutorId: 'tutor-1',
+    temporaryAccess: { usedAt: null, revokedAt: null },
+    async save() { this.saved = true; },
+  };
+  let projection;
+  const service = new GuardianAuthService({
+    GuardianAccessAccountModel: {
+      findOne(filter) {
+        assert.deepEqual(filter, { _id: 'account-1', school_id: 'school-1' });
+        return {
+          select(fields) {
+            projection = fields;
+            if (fields.includes('+temporaryAccess.credentialId')) {
+              account.temporaryAccess.credentialId = 'credential-1';
+            }
+            return Promise.resolve(account);
+          },
+        };
+      },
+    },
+  });
+  service._getNow = () => now;
+  let event;
+  service._registerEvent = async (value) => { event = value; };
+  const result = await service.revokeTemporaryAccess({
+    schoolId: 'school-1', accountId: 'account-1', actor: { id: 'user-1', roles: ['Admin'] },
+  });
+  assert.match(projection, /\+temporaryAccess\.credentialId/);
+  assert.deepEqual(result, { revoked: true });
+  assert.equal(account.temporaryAccess.revokedAt, now);
+  assert.equal(account.saved, true);
+  assert.equal(event.eventType, GUARDIAN_ACCESS_EVENT_TYPES.TEMPORARY_ACCESS_REVOKED);
+});
+
 function createQuery(value) {
   let currentValue = value;
   return {

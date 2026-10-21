@@ -4326,7 +4326,7 @@ class GuardianAuthService {
     let query = this.GuardianAccessAccountModel.findOne({
       _id: accountId,
       school_id: schoolId,
-    }).select('+pinHash');
+    }).select('+pinHash +temporaryAccess.credentialId');
     query = this._withSession(query, session);
     const account = await query;
 
