@@ -104,7 +104,7 @@ function buildOccupancy({ classes, enrollments, requests, registrations = [], st
     if (r.status === 'APPROVED') diagnostics.approvedWithoutEnrollment++;
     const financialBlocked = r.source === 'reEnrollment' && r.status === 'PENDING' && blocked.has(studentId);
     if (financialBlocked) diagnostics.blocked++;
-    const targetId = id(r.source === 'web' ? r.selectedClassId : r.targetClassId);
+    const targetId = id(r.source === 'web' ? (r.selectedClassId || r.projectedClassSourceId) : r.targetClassId);
     let row = byClass.get(targetId) || byClass.get(resolved.aliases.get(targetId));
     const sourceClass = classesById.get(id(r.currentClassId || r.currentClassSnapshot?.id || r.currentEnrollmentId?.class));
     const targetShift = r.targetShiftName?.trim() || r.currentClassSnapshot?.shift || sourceClass?.shift || '';
@@ -154,7 +154,7 @@ async function load(schoolId, academicYear) {
       .populate({ path: 'studentId', match: { school_id: schoolId }, select: 'fullName isActive cpf birthDate' })
       .populate({ path: 'currentEnrollmentId', match: { school_id: schoolId }, select: 'status class' }).lean(),
     Registration.find({ school_id: schoolId, status: { $in: ['PENDING', 'APPROVED'] }, $or: [{ academicYearTo: year }, { academicYearTo: { $exists: false } }, { academicYearTo: null }] })
-      .select('studentData.fullName studentData.cpf studentData.birthDate studentData.intendedGrade academicYearTo selectedClassId selectedClassSnapshot approvedStudentId status createdAt').lean(),
+      .select('studentData.fullName studentData.cpf studentData.birthDate studentData.intendedGrade academicYearTo selectedClassId projectedClassSourceId selectedClassSnapshot approvedStudentId status createdAt').lean(),
     Class.distinct('schoolYear', { school_id: schoolId }),
   ]);
   const identityFilters = registrations.flatMap(r => {

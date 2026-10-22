@@ -57,6 +57,7 @@ const registrationRequestSchema = new Schema({
     academicYearTo: { type: Number, min: 1900, max: 2200 },
     approvedStudentId: { type: Schema.Types.ObjectId, ref: 'Student' },
     selectedClassId: { type: Schema.Types.ObjectId, ref: 'Class', required: false, index: true },
+    projectedClassSourceId: { type: Schema.Types.ObjectId, ref: 'Class' },
     selectedClassSnapshot: {
         schoolYear: Number,
         id: String,
@@ -66,7 +67,9 @@ const registrationRequestSchema = new Schema({
         shift: String,
         startTime: String,
         endTime: String,
-        monthlyFee: Number
+        monthlyFee: Number,
+        pricingVersionId: String,
+        pricingVersion: Number
     },
     selectedEnrollmentOfferId: {
         type: Schema.Types.ObjectId,

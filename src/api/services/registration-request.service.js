@@ -7,9 +7,14 @@ const Enrollment = require('../models/enrollment.model');
 const School = require('../models/school.model');
 const enrollmentOfferService = require('./enrollmentOffer.service');
 const AuditLog = require('../models/auditLog.model');
+const feePlans = require('./academicMonthlyFeePlan.service');
+const classService = require('./class.service');
+const { resolveClasses } = require('./classOccupancy.service');
 const {
   isValidCpf,
   normalizeCpf,
+  normalizeName,
+  buildBirthDateKey,
 } = require('../utils/guardianAccess.util');
 
 function createHttpError(message, statusCode = 400) {
@@ -154,6 +159,8 @@ function buildSelectedClassSnapshot(publicClass) {
     startTime: publicClass.startTime,
     endTime: publicClass.endTime,
     monthlyFee: publicClass.monthlyFee,
+    pricingVersionId: publicClass.pricingVersionId,
+    pricingVersion: publicClass.pricingVersion,
   };
 }
 
@@ -429,6 +436,7 @@ function normalizeTutorData(tutorData = null, registrationType) {
   if (!tutorData || typeof tutorData !== 'object') return tutorData;
 
   const baseTutorData = toPlainData(tutorData);
+  if (!baseTutorData) return null;
   const normalized = {
     ...baseTutorData,
     address: normalizeAddress(baseTutorData.address),
@@ -449,6 +457,27 @@ function normalizeTutorData(tutorData = null, registrationType) {
 }
 
 class RegistrationRequestService {
+  async _acquireSchoolMutationLock(schoolId) {
+    const token = new mongoose.Types.ObjectId().toString();
+    const now = new Date();
+    try {
+      await mongoose.connection.collection('registration_approval_locks').updateOne(
+        { _id: String(schoolId), expiresAt: { $lte: now } },
+        { $set: { token, expiresAt: new Date(now.getTime() + 300000) } },
+        { upsert: true }
+      );
+    } catch (error) {
+      if (error.code === 11000) throw createHttpError('Outra operação de matrícula está em andamento. Tente novamente.', 409);
+      throw error;
+    }
+    return token;
+  }
+
+  async _releaseSchoolMutationLock(schoolId, token) {
+    await mongoose.connection.collection('registration_approval_locks')
+      .deleteOne({ _id: String(schoolId), token }).catch(() => {});
+  }
+
   async _assertSchoolExists(schoolId) {
     if (!schoolId || !isObjectId(schoolId)) {
       throw createHttpError('Escola nao encontrada.', 404);
@@ -462,8 +491,8 @@ class RegistrationRequestService {
     return school;
   }
 
-  async _getClassAvailability(classDoc) {
-    if (!classDoc || classDoc.status !== 'Ativa') {
+  async _getClassAvailability(classDoc, allowPlanned = false) {
+    if (!classDoc || (classDoc.status !== 'Ativa' && !(allowPlanned && classDoc.status === 'Planejada'))) {
       return 'unavailable';
     }
 
@@ -480,7 +509,7 @@ class RegistrationRequestService {
     return activeEnrollments >= classDoc.capacity ? 'unavailable' : 'available';
   }
 
-  async _getSelectableClassOrThrow(classId, schoolId) {
+  async _getSelectableClassOrThrow(classId, schoolId, allowPlanned = false) {
     if (!classId || !isObjectId(classId)) {
       throw createHttpError('Turma nao encontrada.', 404);
     }
@@ -494,11 +523,11 @@ class RegistrationRequestService {
       throw createHttpError('Turma nao pertence a esta escola.', 404);
     }
 
-    if (classDoc.status !== 'Ativa') {
+    if (classDoc.status !== 'Ativa' && !(allowPlanned && classDoc.status === 'Planejada')) {
       throw createHttpError('Turma inativa para solicitacao de matricula.', 409);
     }
 
-    const availabilityStatus = await this._getClassAvailability(classDoc);
+    const availabilityStatus = await this._getClassAvailability(classDoc, allowPlanned);
     if (availabilityStatus !== 'available') {
       throw createHttpError('Turma indisponivel para novas solicitacoes.', 409);
     }
@@ -512,8 +541,34 @@ class RegistrationRequestService {
     };
   }
 
-  async listPublicClasses(schoolId) {
+  async listPublicClasses(schoolId, academicYear = null) {
+    if (academicYear != null && ![2026, 2027].includes(Number(academicYear))) {
+      throw createHttpError('Ano letivo invalido.', 400);
+    }
     await this._assertSchoolExists(schoolId);
+
+    if (academicYear != null) {
+      const year = Number(academicYear);
+      if (![2026, 2027].includes(year)) throw createHttpError('Ano letivo invalido.', 400);
+      const classes = await Class.find({ school_id: schoolId, schoolYear: { $lte: year } }).lean();
+      const rows = resolveClasses(classes, year).rows.filter(row => year !== 2026 || !row.isProjection);
+      return Promise.all(rows.map(async (row) => {
+        const price = year === 2027
+          ? await feePlans.publishedForDestination(schoolId, year, row)
+          : null;
+        const availability = row.isProjection
+          ? (row.status === 'Ativa' ? 'available' : 'unavailable')
+          : await this._getClassAvailability(row, year === 2027);
+        return {
+          ...buildPublicClassPayload({ ...row, _id: row.id, schoolYear: year },
+            year === 2027 && !price ? 'unavailable' : availability),
+          monthlyFee: year === 2027 ? price?.value ?? null : row.monthlyFee,
+          pricingVersionId: price?.versionId,
+          pricingVersion: price?.version,
+          isProjection: row.isProjection,
+        };
+      }));
+    }
 
     const classes = await Class.find({
       school_id: schoolId,
@@ -528,6 +583,41 @@ class RegistrationRequestService {
     );
 
     return publicClasses;
+  }
+
+  async _resolveDestination(schoolId, year, destinationId) {
+    if (!destinationId) return null;
+    if (![2026, 2027].includes(Number(year))) throw createHttpError('Informe o ano letivo do destino.', 400);
+    const classes = await this.listPublicClasses(schoolId, year);
+    const item = classes.find(c => c.id === String(destinationId));
+    if (!item || item.availabilityStatus !== 'available') throw createHttpError('Turma indisponivel para o ano letivo selecionado.', 409);
+    const match = /^planning:(\d{4}):([a-f\d]{24})$/i.exec(item.id);
+    if (match) {
+      if (Number(match[1]) !== Number(year)) throw createHttpError('Ano da turma invalido.', 409);
+      return { projectedSourceId: match[2], snapshot: buildSelectedClassSnapshot(item), publicClass: item };
+    }
+    const selected = await this._getSelectableClassOrThrow(item.id, schoolId, Number(year) === 2027);
+    return { ...selected, snapshot: buildSelectedClassSnapshot(item), publicClass: item };
+  }
+
+  async _materializeDestination(schoolId, year, sourceId) {
+    const source = await Class.findOne({ _id: sourceId, school_id: schoolId });
+    if (!source || source.schoolYear >= year) throw createHttpError('Turma projetada nao encontrada.', 409);
+    const data = {
+      name: source.name, schoolYear: year, level: source.level, grade: source.grade,
+      shift: source.shift, room: source.room, capacity: source.capacity,
+      scheduleSettings: source.scheduleSettings, status: 'Ativa',
+    };
+    let target = await classService.findClassConflict({ schoolId, classData: data });
+    if (target) return this._getSelectableClassOrThrow(target._id, schoolId, true);
+    const destination = await this._resolveDestination(schoolId, year, `planning:${year}:${sourceId}`);
+    data.monthlyFee = destination.publicClass.monthlyFee;
+    try { target = await classService.createClass(data, schoolId); }
+    catch (error) {
+      target = await classService.findClassConflict({ schoolId, classData: data });
+      if (!target) throw error;
+    }
+    return this._getSelectableClassOrThrow(target._id, schoolId, true);
   }
 
   async listPublicOffers(schoolId, classId = null) {
@@ -587,13 +677,15 @@ class RegistrationRequestService {
 
     let selectedClass = null;
     if (selectedClassId) {
-      selectedClass = await this._getSelectableClassOrThrow(selectedClassId, school_id);
+      selectedClass = requestedYear == null
+        ? await this._getSelectableClassOrThrow(selectedClassId, school_id)
+        : await this._resolveDestination(school_id, requestedYear, selectedClassId);
     }
-    if (selectedClass && requestedYear != null && selectedClass.classDoc.schoolYear !== requestedYear) {
+    if (selectedClass?.classDoc && requestedYear != null && selectedClass.classDoc.schoolYear !== requestedYear) {
       throw createHttpError('A turma selecionada nao pertence ao ano letivo solicitado.', 409);
     }
 
-    if (selectedEnrollmentOfferId && !selectedClass) {
+    if (selectedEnrollmentOfferId && (!selectedClass?.classDoc || requestedYear === 2027)) {
       throw createHttpError('Selecione uma turma antes de escolher a oferta.', 400);
     }
 
@@ -622,6 +714,7 @@ class RegistrationRequestService {
       studentData: normalizedStudentData,
       tutorData: normalizedTutorData,
       selectedClassId: selectedClass?.classDoc?._id || undefined,
+      projectedClassSourceId: selectedClass?.projectedSourceId || undefined,
       selectedClassSnapshot: selectedClass?.snapshot || undefined,
       selectedEnrollmentOfferId: selectedOffer?.offer?._id || undefined,
       selectedEnrollmentOfferSnapshot: selectedOffer?.snapshot || undefined,
@@ -649,6 +742,8 @@ class RegistrationRequestService {
   }
 
   async updateRequestData(requestId, schoolId, actorId, payload = {}) {
+    const lockToken = await this._acquireSchoolMutationLock(schoolId);
+    try {
     const request = await RegistrationRequest.findOne({ _id: requestId, school_id: schoolId });
 
     if (!request) throw createHttpError('Solicitacao nao encontrada.', 404);
@@ -660,22 +755,48 @@ class RegistrationRequestService {
     const studentData = payload.studentData;
     const tutorData = payload.tutorData;
 
-    if (Object.prototype.hasOwnProperty.call(payload, 'academicYearTo')) {
-      const requestedYear = payload.academicYearTo == null || payload.academicYearTo === ''
+    const changesDestination = Object.prototype.hasOwnProperty.call(payload, 'selectedClassId');
+    const changesYear = Object.prototype.hasOwnProperty.call(payload, 'academicYearTo');
+    let destinationForUpdate = null;
+    if (changesYear || changesDestination) {
+      const yearValue = changesYear ? payload.academicYearTo : request.academicYearTo;
+      const requestedYear = yearValue == null || yearValue === ''
         ? null
-        : Number(payload.academicYearTo);
+        : Number(yearValue);
       if (requestedYear != null && (!Number.isInteger(requestedYear) || requestedYear < 1900 || requestedYear > 2200)) {
         throw createHttpError('Informe um ano letivo de destino valido.', 400);
       }
-      if (request.selectedClassId && requestedYear != null) {
-        const selectedClass = await Class.findOne({ _id: request.selectedClassId, school_id: schoolId })
-          .select('schoolYear');
-        if (!selectedClass) throw createHttpError('Turma vinculada a solicitacao nao encontrada.', 409);
-        if (selectedClass.schoolYear !== requestedYear) {
+      const classId = changesDestination ? payload.selectedClassId : request.selectedClassId;
+      let selectedClass = null;
+      if (changesDestination && classId) {
+        selectedClass = requestedYear == null
+          ? await this._getSelectableClassOrThrow(classId, schoolId)
+          : await this._resolveDestination(schoolId, requestedYear, classId);
+      } else if (classId && requestedYear != null) {
+        const classDoc = await Class.findOne({ _id: classId, school_id: schoolId }).select('schoolYear');
+        if (!classDoc) throw createHttpError('Turma vinculada a solicitacao nao encontrada.', 409);
+        selectedClass = { classDoc };
+      }
+      if (selectedClass?.classDoc && requestedYear != null) {
+        if (selectedClass.classDoc.schoolYear !== requestedYear) {
           throw createHttpError('A turma selecionada nao pertence ao ano letivo informado.', 409);
         }
       }
-      request.academicYearTo = requestedYear;
+      if (changesDestination) destinationForUpdate = selectedClass;
+      request.academicYearTo = requestedYear ?? selectedClass?.classDoc?.schoolYear;
+      if (changesDestination && String(classId || '') !== String(previous.selectedClassSnapshot?.id || previous.selectedClassId || '')) {
+        request.selectedClassId = selectedClass?.classDoc?._id || undefined;
+        request.projectedClassSourceId = selectedClass?.projectedSourceId || undefined;
+        request.selectedClassSnapshot = selectedClass?.snapshot || undefined;
+        request.selectedEnrollmentOfferId = undefined;
+        request.selectedEnrollmentOfferSnapshot = undefined;
+        request.requestedRegime = 'regular';
+        request.requestedPermanenceClassId = undefined;
+        request.requestedPermanenceClassSnapshot = undefined;
+        request.permanenceNotes = undefined;
+      } else if (changesDestination && selectedClass?.snapshot) {
+        request.selectedClassSnapshot = selectedClass.snapshot;
+      }
     }
 
     if (studentData && typeof studentData === 'object') {
@@ -690,6 +811,10 @@ class RegistrationRequestService {
         mergeRequestData(request.tutorData, tutorData),
         request.registrationType
       );
+    }
+
+    if (destinationForUpdate?.snapshot) {
+      request.studentData.intendedGrade = destinationForUpdate.snapshot.grade || destinationForUpdate.snapshot.name;
     }
 
     request.markModified('studentData');
@@ -708,15 +833,36 @@ class RegistrationRequestService {
           studentData: previous.studentData,
           tutorData: previous.tutorData,
           academicYearTo: previous.academicYearTo,
+          selectedClassId: previous.selectedClassId,
+          selectedClassSnapshot: previous.selectedClassSnapshot,
+          projectedClassSourceId: previous.projectedClassSourceId,
+          selectedEnrollmentOfferId: previous.selectedEnrollmentOfferId,
+          selectedEnrollmentOfferSnapshot: previous.selectedEnrollmentOfferSnapshot,
+          requestedRegime: previous.requestedRegime,
+          requestedPermanenceClassId: previous.requestedPermanenceClassId,
+          requestedPermanenceClassSnapshot: previous.requestedPermanenceClassSnapshot,
+          permanenceNotes: previous.permanenceNotes,
         },
         current: {
           studentData: saved.toObject({ depopulate: true }).studentData,
           tutorData: saved.toObject({ depopulate: true }).tutorData,
           academicYearTo: saved.academicYearTo,
+          selectedClassId: saved.selectedClassId,
+          selectedClassSnapshot: saved.selectedClassSnapshot,
+          projectedClassSourceId: saved.projectedClassSourceId,
+          selectedEnrollmentOfferId: saved.selectedEnrollmentOfferId,
+          selectedEnrollmentOfferSnapshot: saved.selectedEnrollmentOfferSnapshot,
+          requestedRegime: saved.requestedRegime,
+          requestedPermanenceClassId: saved.requestedPermanenceClassId,
+          requestedPermanenceClassSnapshot: saved.requestedPermanenceClassSnapshot,
+          permanenceNotes: saved.permanenceNotes,
         },
       },
     });
     return saved;
+    } finally {
+      await this._releaseSchoolMutationLock(schoolId, lockToken);
+    }
   }
 
   async _findExistingTutor(tutorData, schoolId) {
@@ -805,12 +951,16 @@ class RegistrationRequestService {
     let createdStudent = null;
     let createdEnrollment = null;
     let shouldCleanupTutor = false;
+    // Serialize approval for a school so concurrent requests cannot both pass
+    // the capacity check or approve the same request. The lease is recoverable
+    // if the process exits before releasing it.
+    const lockToken = await this._acquireSchoolMutationLock(schoolId);
 
     try {
       const request = await RegistrationRequest.findOne({ _id: requestId, school_id: schoolId });
 
       if (!request) throw new Error('Solicitacao nao encontrada.');
-      if (request.status === 'APPROVED') throw new Error('Esta solicitacao ja foi aprovada.');
+      if (request.status !== 'PENDING') throw createHttpError('Somente solicitacoes pendentes podem ser aprovadas.', 409);
 
       const sourceStudentData = finalStudentData
         ? {
@@ -828,19 +978,59 @@ class RegistrationRequestService {
       const sData = normalizeStudentData(sourceStudentData, request.registrationType);
       const tData = normalizeTutorData(sourceTutorData, request.registrationType);
 
+      const studentCpf = normalizeCpf(sData.cpf);
+      const identityConditions = [];
+      if (studentCpf) {
+        const formattedCpf = `${studentCpf.slice(0, 3)}.${studentCpf.slice(3, 6)}.${studentCpf.slice(6, 9)}-${studentCpf.slice(9)}`;
+        identityConditions.push({ cpf: { $in: [studentCpf, formattedCpf] } });
+      }
+      const nameKey = normalizeName(sData.fullName);
+      const dateKey = buildBirthDateKey(sData.birthDate);
+      if (nameKey && dateKey) identityConditions.push({ fullNameNormalized: nameKey, birthDateKey: dateKey });
+      if (identityConditions.length) {
+        const existingStudent = await Student.findOne({ school_id: schoolId, $or: identityConditions }).select('_id');
+        if (existingStudent) throw createHttpError('Já existe aluno com este CPF ou nome e nascimento na escola. Revise o cadastro existente antes de aprovar.', 409);
+      }
+
       const selectedClassId =
         options.finalSelectedClassId || request.selectedClassId || null;
       let selectedClass = null;
 
       if (selectedClassId) {
-        selectedClass = await this._getSelectableClassOrThrow(selectedClassId, schoolId);
+        selectedClass = await this._getSelectableClassOrThrow(selectedClassId, schoolId, request.academicYearTo === 2027);
+      } else if (request.projectedClassSourceId && request.academicYearTo === 2027) {
+        selectedClass = await this._materializeDestination(schoolId, 2027, request.projectedClassSourceId);
       }
       if (selectedClass && request.academicYearTo && selectedClass.classDoc.schoolYear !== request.academicYearTo) {
         throw createHttpError('A turma selecionada nao pertence ao ano letivo solicitado.', 409);
       }
+      if (request.academicYearTo === 2027 && !selectedClass) {
+        throw createHttpError('Selecione uma turma de 2027 antes da aprovacao.', 409);
+      }
+
 
       const selectedOfferId =
         options.finalSelectedEnrollmentOfferId || request.selectedEnrollmentOfferId || null;
+      if (selectedClass?.classDoc?.schoolYear === 2027 && selectedOfferId) {
+        throw createHttpError('Oferta de permanencia nao disponivel para matricula de 2027.', 409);
+      }
+      if (selectedClass?.classDoc?.schoolYear === 2027) {
+        const pricing = await feePlans.publishedForDestination(schoolId, 2027, selectedClass.classDoc);
+        if (!pricing) throw createHttpError('Mensalidade publicada de 2027 indisponivel.', 409);
+        const snapshot = request.selectedClassSnapshot;
+        if (!snapshot || snapshot.schoolYear !== 2027 ||
+            snapshot.name !== selectedClass.classDoc.name ||
+            snapshot.educationLevel !== selectedClass.classDoc.level ||
+            snapshot.grade !== selectedClass.classDoc.grade ||
+            snapshot.shift !== selectedClass.classDoc.shift ||
+            snapshot.monthlyFee !== pricing.value) {
+          throw createHttpError('Turma ou mensalidade de 2027 mudou. Revise o destino antes de aprovar.', 409);
+        }
+        selectedClass.classDoc.monthlyFee = pricing.value;
+        selectedClass.snapshot.monthlyFee = pricing.value;
+        selectedClass.snapshot.pricingVersionId = pricing.versionId;
+        selectedClass.snapshot.pricingVersion = pricing.version;
+      }
       let selectedOffer = null;
 
       if (selectedOfferId) {
@@ -948,6 +1138,17 @@ class RegistrationRequestService {
       }
 
       if (selectedClass) {
+        if (selectedClass.classDoc.status === 'Planejada') {
+          const publishedFee = selectedClass.classDoc.monthlyFee;
+          const activated = await Class.findOneAndUpdate(
+            { _id: selectedClass.classDoc._id, school_id: schoolId, status: 'Planejada' },
+            { $set: { status: 'Ativa' } }, { new: true }
+          );
+          if (!activated) throw createHttpError('A turma planejada foi alterada. Revise o destino.', 409);
+          if (userId) await AuditLog.create({ school: schoolId, actor: userId, entity: 'Class', entityId: activated._id, action: 'UPDATE', reason: 'REGISTRATION_APPROVAL_ACTIVATED_CLASS', changes: { previous: { status: 'Planejada' }, current: { status: 'Ativa' } } });
+          activated.monthlyFee = publishedFee;
+          selectedClass.classDoc = activated;
+        }
         try {
           createdEnrollment = await this._createEnrollmentForApprovedRequest(
             createdStudent,
@@ -973,6 +1174,7 @@ class RegistrationRequestService {
         }
 
         request.selectedClassId = selectedClass.classDoc._id;
+        request.projectedClassSourceId = undefined;
         request.selectedClassSnapshot = selectedClass.snapshot;
         request.markModified('selectedClassSnapshot');
 
@@ -1023,6 +1225,8 @@ class RegistrationRequestService {
 
       console.error('Erro no Service approveRequest:', error);
       throw error;
+    } finally {
+      await this._releaseSchoolMutationLock(schoolId, lockToken);
     }
   }
 

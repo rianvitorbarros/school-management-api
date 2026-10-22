@@ -56,7 +56,7 @@ const normalizeRelationship = (tutors) => {
 exports.listPublicClasses = async (req, res) => {
     try {
         const { schoolId } = req.params;
-        const classes = await service.listPublicClasses(schoolId);
+        const classes = await service.listPublicClasses(schoolId, req.query.academicYear);
         return res.json(classes);
     } catch (error) {
         console.error('Erro listPublicClasses:', error);
