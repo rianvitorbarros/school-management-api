@@ -28,7 +28,15 @@ const questionSchema = new Schema({
     },
 
     linesToLeave: { type: Number, default: 5 },
-    weight: { type: Number, default: 1 }
+    weight: { type: Number, default: 1 },
+
+    // Metadados pedagogicos (preenchidos pela Iara ou pelo professor).
+    difficulty: { type: String, enum: ['EASY', 'MEDIUM', 'HARD', null], default: null },
+    explanation: { type: String, default: null },
+    expectedAnswer: { type: String, default: null },
+    bnccSkill: { type: String, default: null },
+    estimatedMinutes: { type: Number, default: null },
+    generatedByIara: { type: Boolean, default: false }
 });
 
 const examSchema = new Schema({
