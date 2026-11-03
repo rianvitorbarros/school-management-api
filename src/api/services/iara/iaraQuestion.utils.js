@@ -166,7 +166,7 @@ function normalizeQuestion(raw, { defaultDifficulty = null } = {}) {
         text,
         options,
         correctAnswer: LETTERS[correctIndex],
-        linesToLeave: 0,
+        linesToLeave: 5,
         weight: Number.isFinite(weight) && weight > 0 ? weight : 1,
         difficulty,
         explanation,
