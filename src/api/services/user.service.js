@@ -57,9 +57,9 @@ class UserService {
     return profile;
   }
 
-  async _createMembership(data, user, schoolId) {
+  async _createMembership(data, user, schoolId, { allowPrimaryLegacy = false } = {}) {
     const existing = await SchoolUserMembership.findOne({ user: user._id, school_id: schoolId });
-    if (existing || await this._legacyMembership(user, schoolId)) throw domainError('Este professor já está vinculado à escola atual.', 'STAFF_ALREADY_LINKED_TO_CURRENT_SCHOOL', 409);
+    if (existing || (!allowPrimaryLegacy && await this._legacyMembership(user, schoolId))) throw domainError('Este professor já está vinculado à escola atual.', 'STAFF_ALREADY_LINKED_TO_CURRENT_SCHOOL', 409);
     const profile = await this._createProfile(data, user._id, schoolId);
     try {
       return await SchoolUserMembership.create({ user: user._id, school_id: schoolId, roles: Array.isArray(data.roles) && data.roles.length ? data.roles : ['Professor'], status: data.status || 'Ativo', staffProfile: profile._id });
@@ -78,7 +78,7 @@ class UserService {
     const user = new User({ ...pick(data, identityFields), school_id: schoolId, roles: data.roles || ['Professor'], status: data.status || 'Ativo' });
     await user.save();
     try {
-      const membership = await this._createMembership(data, user, schoolId);
+      const membership = await this._createMembership(data, user, schoolId, { allowPrimaryLegacy: true });
       // Legacy readers retain the primary profile only. Linked profiles live
       // exclusively in the membership to avoid data leakage between schools.
       user.staffProfiles.push(membership.staffProfile);
