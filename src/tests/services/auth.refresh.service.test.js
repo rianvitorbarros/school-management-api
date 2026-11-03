@@ -6,6 +6,7 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || 'auth-refresh-test-secret';
 
 const User = require('../../api/models/user.model');
 const AuthSession = require('../../api/models/authSession.model');
+const SchoolUserMembership = require('../../api/models/schoolUserMembership.model');
 const authService = require('../../api/services/auth.service');
 
 function fakeUser() {
@@ -29,9 +30,24 @@ function fakeUser() {
   };
 }
 
+function emptyMembershipQuery() {
+  return {
+    populate() { return this; },
+    then(resolve, reject) { return Promise.resolve([]).then(resolve, reject); },
+  };
+}
+
+function membershipQuery(memberships) {
+  return {
+    populate() { return this; },
+    then(resolve, reject) { return Promise.resolve(memberships).then(resolve, reject); },
+  };
+}
+
 test('login emits short access token and opaque refresh token without password', async (t) => {
   const user = fakeUser();
   t.mock.method(User, 'findOne', () => ({ select: async () => user }));
+  t.mock.method(SchoolUserMembership, 'find', emptyMembershipQuery);
   t.mock.method(AuthSession, 'create', async (data) => ({ _id: 'session-1', ...data }));
 
   const result = await authService.login('professor', 'secret');
@@ -57,6 +73,7 @@ test('refresh rotates the token and revokes the previous session atomically', as
   let rotatedUpdate;
   t.mock.method(AuthSession, 'findOne', async () => current);
   t.mock.method(User, 'findOne', async () => user);
+  t.mock.method(SchoolUserMembership, 'find', emptyMembershipQuery);
   t.mock.method(AuthSession, 'findOneAndUpdate', async (_query, update) => {
     rotatedUpdate = update;
     return current;
@@ -70,4 +87,28 @@ test('refresh rotates the token and revokes the previous session atomically', as
   assert.notEqual(result.refreshToken, 'old-refresh-token');
   assert.equal(rotatedUpdate.$set.revokeReason, 'rotated');
   assert.ok(rotatedUpdate.$set.replacedByTokenHash);
+});
+
+test('multi-school login requires a school and scopes token roles to it', async (t) => {
+  const user = fakeUser();
+  const schoolA = { _id: { toString: () => 'school-a' }, name: 'Escola A' };
+  const schoolB = { _id: { toString: () => 'school-b' }, name: 'Colégio Batista' };
+  const memberships = [
+    { school_id: schoolA, roles: ['Professor'], status: 'Ativo', staffProfile: null },
+    { school_id: schoolB, roles: ['Coordenador'], status: 'Ativo', staffProfile: null },
+  ];
+  t.mock.method(User, 'findOne', () => ({ select: async () => user }));
+  t.mock.method(SchoolUserMembership, 'find', () => membershipQuery(memberships));
+  t.mock.method(AuthSession, 'create', async (data) => ({ _id: 'session-multi', ...data }));
+
+  const prompt = await authService.login('professor', 'secret');
+  assert.equal(prompt.requiresSchoolSelection, true);
+  assert.deepEqual(prompt.schools.map((school) => school.schoolId), ['school-a', 'school-b']);
+
+  const selected = await authService.login('professor', 'secret', 'school-b');
+  const payload = jwt.verify(selected.token, process.env.JWT_SECRET);
+  assert.equal(payload.school_id, 'school-b');
+  assert.deepEqual(payload.roles, ['Coordenador']);
+  assert.equal(selected.user.school_id, 'school-b');
+  assert.deepEqual(selected.user.roles, ['Coordenador']);
 });

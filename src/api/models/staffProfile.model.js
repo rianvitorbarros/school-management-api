@@ -13,6 +13,9 @@ const MARITAL_STATUS = [
 
 const staffProfileSchema = new Schema({
   user: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+  // Kept optional for legacy records. New profiles always receive it from the
+  // membership service and are therefore impossible to reuse across schools.
+  school_id: { type: Schema.Types.ObjectId, ref: 'School', required: false, index: true },
 
   // --- Identificação (NOVO) ---
   nationality: { type: String, trim: true, default: '' },
@@ -67,6 +70,6 @@ const staffProfileSchema = new Schema({
   enabledSubjects: [{ type: Schema.Types.ObjectId, ref: 'Subject' }],
 }, { timestamps: true });
 
-staffProfileSchema.index({ user: 1, mainRole: 1 }, { unique: true });
+staffProfileSchema.index({ user: 1, school_id: 1, mainRole: 1 }, { unique: true });
 
 module.exports = mongoose.model('StaffProfile', staffProfileSchema);

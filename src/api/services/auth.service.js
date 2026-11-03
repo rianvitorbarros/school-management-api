@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const User = require('../models/user.model');
 const AuthSession = require('../models/authSession.model');
+const SchoolUserMembership = require('../models/schoolUserMembership.model');
 
 const ACCESS_TOKEN_TTL = process.env.ACCESS_TOKEN_TTL || '15m';
 const REFRESH_TOKEN_TTL_DAYS = Math.max(
@@ -28,31 +29,35 @@ function authError(message, statusCode = 401) {
 }
 
 class AuthService {
-  _buildPayload(user, sessionId) {
+  _buildPayload(user, membership, sessionId) {
     return {
       id: user._id.toString(),
       fullName: user.fullName,
-      roles: user.roles,
-      school_id: user.school_id.toString(),
+      roles: membership.roles,
+      school_id: membership.school_id && membership.school_id._id
+        ? membership.school_id._id.toString()
+        : membership.school_id.toString(),
       tokenType: 'access',
       sessionId: String(sessionId),
     };
   }
 
-  _signAccessToken(user, sessionId) {
+  _signAccessToken(user, membership, sessionId) {
     if (!process.env.JWT_SECRET) throw authError('Erro interno do servidor ao gerar token.', 500);
-    const token = jwt.sign(this._buildPayload(user, sessionId), process.env.JWT_SECRET, {
+    const token = jwt.sign(this._buildPayload(user, membership, sessionId), process.env.JWT_SECRET, {
       expiresIn: ACCESS_TOKEN_TTL,
     });
     const decoded = jwt.decode(token);
     return { token, accessTokenExpiresAt: new Date(decoded.exp * 1000).toISOString() };
   }
 
-  async _createSession(user, familyId = crypto.randomUUID()) {
+  async _createSession(user, membership, familyId = crypto.randomUUID()) {
     const refreshToken = createOpaqueToken();
     const session = await AuthSession.create({
       userId: user._id,
-      schoolId: user.school_id,
+      schoolId: membership.school_id && membership.school_id._id
+        ? membership.school_id._id
+        : membership.school_id,
       familyId,
       tokenHash: hashToken(refreshToken),
       expiresAt: refreshExpiry(),
@@ -60,28 +65,75 @@ class AuthService {
     return { session, refreshToken };
   }
 
-  async _serializeUser(user) {
+  async _serializeUser(user, membership) {
     await user.populate({
       path: 'staffProfiles',
       populate: { path: 'enabledSubjects', model: 'Subject' },
     });
     const result = user.toObject();
     delete result.password;
+    // Never return profiles or roles belonging to another institution.
+    const profile = membership.staffProfile && membership.staffProfile._id
+      ? membership.staffProfile
+      : membership.staffProfile
+        ? await require('../models/staffProfile.model').findById(membership.staffProfile).populate('enabledSubjects')
+        : null;
+    result.school_id = membership.school_id && membership.school_id._id
+      ? String(membership.school_id._id)
+      : String(membership.school_id);
+    result.roles = membership.roles;
+    result.status = membership.status;
+    result.staffProfiles = profile ? [profile] : [];
     return result;
   }
 
-  async login(identifier, password) {
+  async _membershipsFor(user) {
+    const memberships = await SchoolUserMembership.find({ user: user._id, status: 'Ativo' })
+      .populate('school_id', 'name')
+      .populate({ path: 'staffProfile', populate: { path: 'enabledSubjects', model: 'Subject' } });
+    // Accounts created before this feature retain their original school as a
+    // compatible, virtual membership until the controlled migration is run.
+    if (!memberships.length && user.school_id && user.status === 'Ativo') {
+      memberships.push({
+        user: user._id,
+        school_id: user.school_id,
+        roles: user.roles || [],
+        status: user.status,
+        staffProfile: user.staffProfiles?.[0] || null,
+        legacy: true,
+      });
+    }
+    return memberships;
+  }
+
+  _schoolOption(membership) {
+    const school = membership.school_id;
+    return {
+      schoolId: school && school._id ? String(school._id) : String(school),
+      schoolName: school && school.name ? school.name : 'Escola',
+      roles: membership.roles || [],
+    };
+  }
+
+  async login(identifier, password, requestedSchoolId = null) {
     const user = await User.findOne({
       $or: [{ email: identifier }, { username: identifier }],
     }).select('+password');
     if (!user || !(await user.comparePassword(password))) throw authError('Credenciais inválidas.');
-    if (user.status === 'Inativo') throw authError('Esta conta de usuário está inativa.');
-    if (!user.school_id) throw authError('Esta conta não está vinculada a uma escola. Contate o suporte.');
+    const memberships = await this._membershipsFor(user);
+    if (!memberships.length) throw authError('Esta conta não está vinculada a uma escola. Contate o suporte.');
+    if (!requestedSchoolId && memberships.length > 1) {
+      return { requiresSchoolSelection: true, schools: memberships.map((membership) => this._schoolOption(membership)) };
+    }
+    const membership = requestedSchoolId
+      ? memberships.find((candidate) => String(candidate.school_id._id || candidate.school_id) === String(requestedSchoolId))
+      : memberships[0];
+    if (!membership) throw authError('A escola selecionada não está disponível para esta conta.', 403);
 
-    const { session, refreshToken } = await this._createSession(user);
-    const access = this._signAccessToken(user, session._id);
+    const { session, refreshToken } = await this._createSession(user, membership);
+    const access = this._signAccessToken(user, membership, session._id);
     return {
-      user: await this._serializeUser(user),
+      user: await this._serializeUser(user, membership),
       token: access.token,
       refreshToken,
       accessTokenExpiresAt: access.accessTokenExpiresAt,
@@ -103,12 +155,10 @@ class AuthService {
       throw authError('Sessão revogada.');
     }
 
-    const user = await User.findOne({
-      _id: current.userId,
-      school_id: current.schoolId,
-      status: 'Ativo',
-    });
-    if (!user) {
+    const user = await User.findOne({ _id: current.userId, status: 'Ativo' });
+    const memberships = user ? await this._membershipsFor(user) : [];
+    const membership = memberships.find((candidate) => String(candidate.school_id._id || candidate.school_id) === String(current.schoolId));
+    if (!user || !membership) {
       await AuthSession.updateMany(
         { familyId: current.familyId, revokedAt: null },
         { $set: { revokedAt: new Date(), revokeReason: 'user_unavailable' } }
@@ -137,7 +187,7 @@ class AuthService {
       tokenHash: nextHash,
       expiresAt: refreshExpiry(),
     });
-    const access = this._signAccessToken(user, nextSession._id);
+    const access = this._signAccessToken(user, membership, nextSession._id);
     return {
       token: access.token,
       refreshToken: nextRefreshToken,

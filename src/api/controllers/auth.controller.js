@@ -8,7 +8,7 @@ class AuthController {
                 return res.status(400).json({ message: 'Email/usuário e senha são obrigatórios.' });
             }
 
-            const result = await AuthService.login(identifier.toLowerCase(), password);
+            const result = await AuthService.login(identifier.toLowerCase(), password, req.body.schoolId || req.body.school_id || null);
             res.status(200).json(result);
 
         } catch (error) {

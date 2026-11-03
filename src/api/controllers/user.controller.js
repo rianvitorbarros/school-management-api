@@ -38,6 +38,14 @@ const parseAndCleanBody = (body) => {
 const handleError = (res, error, context) => {
     console.error(`❌ ERRO [${context}]:`, error);
 
+    if (error.statusCode && error.code) {
+        return res.status(error.statusCode).json({
+            message: error.message,
+            code: error.code,
+            ...(error.existingUser ? { existingUser: error.existingUser } : {}),
+        });
+    }
+
     // 1. Erro de Duplicidade (MongoDB E11000)
     if (error.code === 11000) {
         // Tenta identificar o campo pelo keyPattern ou pela mensagem
@@ -106,6 +114,19 @@ class UserController {
             res.status(201).json(newUser);
         } catch (error) {
             handleError(res, error, 'UserController.createStaff');
+        }
+    }
+
+    async linkExistingStaff(req, res, next) {
+        try {
+            const schoolId = req.user.school_id;
+            if (!schoolId) return res.status(403).json({ message: 'Usuário não está associado a uma escola.' });
+            const existingUserId = req.params.id;
+            const userData = parseAndCleanBody(req.body);
+            const user = await UserService.linkExistingStaff(existingUserId, userData, schoolId);
+            res.status(201).json(user);
+        } catch (error) {
+            handleError(res, error, 'UserController.linkExistingStaff');
         }
     }
 
@@ -202,3 +223,4 @@ class UserController {
 }
 
 module.exports = new UserController();
+

@@ -3,6 +3,7 @@ const TechnicalProgramOffering = require('../models/technicalProgramOffering.mod
 const TechnicalProgramModule = require('../models/technicalProgramModule.model');
 const TechnicalSpace = require('../models/technicalSpace.model');
 const User = require('../models/user.model');
+const UserService = require('./user.service');
 const {
     normalizeReferenceId,
     normalizeTeacherIds,
@@ -156,12 +157,8 @@ class TechnicalProgramOfferingModuleService {
         }
 
         const uniqueTeacherIds = [...new Set(teacherIds.map(String))];
-        const teachers = await User.find({
-            _id: { $in: uniqueTeacherIds },
-            school_id: schoolId,
-            status: 'Ativo',
-            roles: 'Professor'
-        }).select('_id fullName email roles status');
+        const teachers = (await Promise.all(uniqueTeacherIds.map((id) => UserService.getUserById(id, schoolId).catch(() => null))))
+            .filter((teacher) => teacher && teacher.status === 'Ativo' && teacher.roles?.includes('Professor'));
 
         if (teachers.length !== uniqueTeacherIds.length) {
             throw new Error('Um ou mais professores informados nao foram encontrados, nao pertencem a escola ou nao estao habilitados como Professor.');

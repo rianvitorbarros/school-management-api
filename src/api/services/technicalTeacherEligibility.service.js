@@ -1,6 +1,6 @@
 const TechnicalProgramModule = require('../models/technicalProgramModule.model');
 const TechnicalProgram = require('../models/technicalProgram.model');
-const User = require('../models/user.model');
+const UserService = require('./user.service');
 const { ApiError } = require('../utils/apiError');
 const { normalizeReferenceId } = require('../utils/technicalScheduleSlot');
 
@@ -25,17 +25,9 @@ class TechnicalTeacherEligibilityService {
             return [];
         }
 
-        const teachers = await User.find({
-            school_id: schoolId,
-            status: 'Ativo',
-            roles: 'Professor'
-        })
-            .select('_id fullName email roles status staffProfiles')
-            .populate({
-                path: 'staffProfiles',
-                select: 'enabledSubjects mainRole terminationDate'
-            })
-            .sort({ fullName: 1 });
+        const teachers = (await UserService.getAllUsers(schoolId))
+            .filter((teacher) => teacher.status === 'Ativo' && teacher.roles?.includes('Professor'))
+            .sort((a, b) => String(a.fullName).localeCompare(String(b.fullName)));
 
         return teachers
             .filter((teacher) => {

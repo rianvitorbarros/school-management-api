@@ -1,6 +1,7 @@
 // src/api/services/horario.service.js
 const Horario = require('../models/horario.model');
 const User = require('../models/user.model');
+const UserService = require('./user.service');
 const StaffProfile = require('../models/staffProfile.model');
 const Subject = require('../models/subject.model');
 const Class = require('../models/class.model');
@@ -467,7 +468,7 @@ class HorarioService {
         const { teacherId, subjectId, classId, termId } = data;
 
         // 1. Valida Habilitação do Professor (já faz parte da validação anterior)
-        await this._validateTeacherAbility(teacherId, subjectId);
+        await this._validateTeacherAbility(teacherId, subjectId, schoolId);
 
         // 2. Valida Referências de Turma, Disciplina e Período (Scope Check)
         const [classExists, subjectExists, termExists] = await Promise.all([
@@ -487,11 +488,8 @@ class HorarioService {
     /**
      * Valida se um professor está habilitado para lecionar uma disciplina. (Mantido)
      */
-    async _validateTeacherAbility(teacherId, subjectId) {
-        const teacher = await User.findById(teacherId).populate({
-            path: 'staffProfiles',
-            model: 'StaffProfile'
-        });
+    async _validateTeacherAbility(teacherId, subjectId, schoolId) {
+        const teacher = await UserService.getUserById(teacherId, schoolId).catch(() => null);
 
         if (!teacher || !teacher.staffProfiles || teacher.staffProfiles.length === 0) {
             throw new Error('Professor não encontrado ou não possui um perfil de funcionário.');

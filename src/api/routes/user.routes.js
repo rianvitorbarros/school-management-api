@@ -25,6 +25,8 @@ router.post(
     '/staff', 
     userController.createStaff
 );
+// Explicit confirmation is required before associating an existing account.
+router.post('/staff/:id/link', userController.linkExistingStaff);
 
 // Rota de Criação de Usuário Simples (sem perfil de staff)
 router.post(
