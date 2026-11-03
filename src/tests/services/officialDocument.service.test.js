@@ -4,6 +4,9 @@ const assert = require('node:assert/strict');
 const {
   OfficialDocumentService,
 } = require('../../api/services/officialDocument.service');
+const {
+  hasDetachedPdfSignature,
+} = require('../../api/services/officialDocumentStorage.service');
 
 function createQuery(value) {
   return {
@@ -66,7 +69,16 @@ function matchesFilter(document, filter = {}) {
 }
 
 function createPdfFile(name = 'documento-final.pdf') {
-  const buffer = Buffer.from('%PDF-1.7\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF');
+  const cms = `30${'11'.repeat(160)}`;
+  const before = '%PDF-1.7\n1 0 obj\n<< /Type /Sig /SubFilter /adbe.pkcs7.detached /ByteRange [0 0000000000 0000000000 0000000000] /Contents ';
+  const after = '>>\nendobj\ntrailer\n<<>>\n%%EOF';
+  const firstLength = before.length;
+  const secondOffset = firstLength + cms.length + 2;
+  const byteRange = `[0 ${String(firstLength).padStart(10, '0')} ${String(secondOffset).padStart(10, '0')} ${String(after.length).padStart(10, '0')}]`;
+  const buffer = Buffer.from(
+    `${before.replace('[0 0000000000 0000000000 0000000000]', byteRange)}<${cms}>${after}`,
+    'latin1'
+  );
   return {
     originalname: name,
     mimetype: 'application/pdf',
@@ -74,6 +86,28 @@ function createPdfFile(name = 'documento-final.pdf') {
     buffer,
   };
 }
+
+test('rejects an unsigned PDF instead of registering it as an official signed document', async () => {
+  const { service } = createHarness({
+    students: [{ _id: 'student_1', school_id: 'school_1', tutors: [] }],
+  });
+
+  const unsigned = {
+    originalname: 'sem-assinatura.pdf',
+    mimetype: 'application/pdf',
+    buffer: Buffer.from('%PDF-1.7\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF'),
+  };
+  unsigned.size = unsigned.buffer.length;
+
+  await assert.rejects(
+    service.registerSignedDocument(
+      { documentType: 'official_statement', studentId: 'student_1' },
+      unsigned,
+      { schoolId: 'school_1', actorId: 'user_staff_1' }
+    ),
+    (error) => error.code === 'digital_signature_required'
+  );
+});
 
 function createHarness(seed = {}) {
   let documentSequence = 0;
@@ -182,6 +216,8 @@ test('registerSignedDocument stores final signed PDF metadata and syncs linked r
     ],
   });
 
+  const signedFile = createPdfFile();
+  assert.equal(hasDetachedPdfSignature(signedFile.buffer), true);
   const result = await service.registerSignedDocument(
     {
       requestId: 'request_1',
@@ -189,7 +225,7 @@ test('registerSignedDocument stores final signed PDF metadata and syncs linked r
       isVisibleToGuardian: true,
       certificateSubject: 'CN=Escola Teste',
     },
-    createPdfFile(),
+    signedFile,
     {
       schoolId: 'school_1',
       actorId: 'user_staff_1',
