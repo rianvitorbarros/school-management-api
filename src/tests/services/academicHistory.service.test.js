@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const Student = require('../../api/models/student.model');
+const Attendance = require('../../api/models/attendance.model');
 const {
   AcademicHistoryService,
   FINAL_RESULTS,
@@ -134,6 +135,89 @@ test('servico rejeita nota bimestral fora do intervalo permitido', () => {
     }, { id: '64b7f193c54d7f0012345679' }),
     /entre 0 e 10/
   );
+});
+
+test('transferência não reutiliza metas anuais como dados cumpridos', () => {
+  const service = new AcademicHistoryService();
+  const record = service._sanitizeRecord({
+    gradeLevel: '4º Ano',
+    schoolYear: 2026,
+    schoolName: 'Colégio Batista',
+    city: 'Parauapebas',
+    state: 'PA',
+    finalResult: 'Transferido',
+    institutionType: 'current_school',
+    annualWorkload: '800',
+    annualFrequency: 98,
+    schoolDays: 200,
+    transferDate: '2026-03-15T00:00:00.000Z',
+    grades: [],
+  }, { id: '64b7f193c54d7f0012345679' });
+
+  assert.equal(record.annualWorkload, null);
+  assert.equal(record.annualFrequency, null);
+  assert.equal(record.schoolDays, null);
+  assert.equal(record.completedWorkloadHours, null);
+  assert.equal(record.completedFrequency, null);
+  assert.equal(record.completedSchoolDays, null);
+  assert.equal(record.transferDate.toISOString(), '2026-03-15T00:00:00.000Z');
+});
+
+test('apura frequência de transferência somente pelas chamadas registradas', () => {
+  const result = _private.summarizeAttendanceForStudent({
+    studentId: 'student-1',
+    schoolYear: 2026,
+    attendance: [
+      { date: '2026-02-02T12:00:00.000Z', records: [{ studentId: 'student-1', status: 'PRESENT' }] },
+      { date: '2026-02-03T12:00:00.000Z', records: [{ studentId: 'student-1', status: 'ABSENT' }] },
+      { date: '2026-02-04T12:00:00.000Z', records: [{ studentId: 'student-1', status: 'PRESENT' }] },
+      { date: '2025-12-18T12:00:00.000Z', records: [{ studentId: 'student-1', status: 'PRESENT' }] },
+      { date: '2026-02-05T12:00:00.000Z', records: [{ studentId: 'student-2', status: 'PRESENT' }] },
+    ],
+  });
+
+  assert.equal(result.completedFrequency, 66.7);
+  assert.equal(result.completedSchoolDays, 3);
+  assert.equal(result.metricsMeasuredThrough.toISOString(), '2026-02-04T12:00:00.000Z');
+});
+
+test('integra chamadas da própria escola até a data da transferência', async () => {
+  const service = new AcademicHistoryService();
+  const originalFind = Attendance.find;
+  const originalResolveEnrollment = service._resolveEnrollment;
+  Attendance.find = () => ({
+    select: async () => [
+      { date: '2026-03-14T12:00:00.000Z', records: [{ studentId: 'student-1', status: 'PRESENT' }] },
+      { date: '2026-03-15T12:00:00.000Z', records: [{ studentId: 'student-1', status: 'ABSENT' }] },
+      { date: '2026-03-16T12:00:00.000Z', records: [{ studentId: 'student-1', status: 'PRESENT' }] },
+    ],
+  });
+  service._resolveEnrollment = async () => ({ class: { _id: 'class-1' } });
+  const record = {
+    finalResult: 'Transferido',
+    institutionType: 'current_school',
+    schoolYear: 2026,
+    transferDate: new Date('2026-03-15T00:00:00.000Z'),
+    completedWorkloadHours: null,
+    completedFrequency: null,
+    completedSchoolDays: null,
+    metricsMeasuredThrough: null,
+    metricsSource: '',
+  };
+  try {
+    await service._enrichTransferredMetrics({
+      schoolId: 'school-1', studentId: 'student-1', recordData: record,
+    });
+  } finally {
+    Attendance.find = originalFind;
+    service._resolveEnrollment = originalResolveEnrollment;
+  }
+
+  assert.equal(record.completedFrequency, 50);
+  assert.equal(record.completedSchoolDays, 2);
+  assert.equal(record.completedWorkloadHours, null);
+  assert.equal(record.metricsMeasuredThrough.toISOString(), '2026-03-15T12:00:00.000Z');
+  assert.equal(record.metricsSource, 'attendance_records');
 });
 
 test('schema suporta nota numerica, conceito e situacao especial', () => {

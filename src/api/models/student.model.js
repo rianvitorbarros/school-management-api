@@ -114,6 +114,16 @@ const academicRecordSchema = new Schema({
     annualWorkload: { type: String, trim: true },
     annualFrequency: { type: Number, min: 0, max: 100, default: null },
     schoolDays: { type: Number, min: 0, default: null },
+    completedWorkloadHours: { type: String, trim: true, default: null },
+    completedFrequency: { type: Number, min: 0, max: 100, default: null },
+    completedSchoolDays: { type: Number, min: 0, default: null },
+    transferDate: { type: Date, default: null },
+    metricsMeasuredThrough: { type: Date, default: null },
+    metricsSource: {
+        type: String,
+        enum: ['', 'attendance_records', 'manual_documented'],
+        default: ''
+    },
     finalResult: { type: String, required: true, trim: true },
     observations: { type: String, trim: true, default: '' },
     approvalCriterion: { type: String, trim: true, default: '' },

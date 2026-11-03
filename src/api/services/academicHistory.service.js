@@ -1,4 +1,5 @@
 const CourseLoad = require('../models/courseLoad.model');
+const Attendance = require('../models/attendance.model');
 const Enrollment = require('../models/enrollment.model');
 const Horario = require('../models/horario.model');
 const Periodo = require('../models/periodo.model');
@@ -70,6 +71,57 @@ function parseTermOrder(term) {
 
 function roundOne(value) {
   return Math.round((Number(value) + Number.EPSILON) * 10) / 10;
+}
+
+function optionalNumber(value, { min = 0, max = Infinity } = {}) {
+  if (value === null || value === undefined || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < min || numeric > max) return null;
+  return numeric;
+}
+
+function asOptionalText(value) {
+  const text = String(value ?? '').trim();
+  return text || null;
+}
+
+function asOptionalDate(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function summarizeAttendanceForStudent({ attendance = [], studentId, schoolYear, measuredThrough }) {
+  const start = new Date(Date.UTC(Number(schoolYear), 0, 1));
+  const end = new Date(Date.UTC(Number(schoolYear) + 1, 0, 1));
+  const cutoff = asOptionalDate(measuredThrough);
+  if (cutoff) cutoff.setUTCHours(23, 59, 59, 999);
+  const student = String(studentId);
+  const days = new Map();
+
+  for (const entry of attendance) {
+    const date = asOptionalDate(entry?.date);
+    if (!date || date < start || date >= end || (cutoff && date > cutoff)) continue;
+    const record = (entry.records || []).find((item) => idOf(item.studentId) === student);
+    if (!record || !['PRESENT', 'ABSENT'].includes(record.status)) continue;
+    const dayKey = date.toISOString().slice(0, 10);
+    days.set(dayKey, { date, status: record.status });
+  }
+
+  const entries = [...days.values()].sort((left, right) => left.date - right.date);
+  if (!entries.length) {
+    return {
+      completedFrequency: null,
+      completedSchoolDays: null,
+      metricsMeasuredThrough: null,
+    };
+  }
+  const present = entries.filter((entry) => entry.status === 'PRESENT').length;
+  return {
+    completedFrequency: roundOne((present / entries.length) * 100),
+    completedSchoolDays: entries.length,
+    metricsMeasuredThrough: entries[entries.length - 1].date,
+  };
 }
 
 function gradeKey(grade) {
@@ -374,7 +426,15 @@ class AcademicHistoryService {
     if (!['final_only', 'bimonthly'].includes(gradeEntryMode)) {
       throw httpError('Forma de lancamento das notas invalida.', 400);
     }
-    return {
+    const isTransferred = finalResult === 'Transferido';
+    const requestedMetricsSource = String(recordData.metricsSource || '').trim();
+    if (!['', 'attendance_records', 'manual_documented'].includes(requestedMetricsSource)) {
+      throw httpError('Origem das métricas acadêmicas inválida.', 400);
+    }
+    const manualDocumentedMetrics = isTransferred
+      && requestedMetricsSource === 'manual_documented';
+
+    const sanitized = {
       ...recordData,
       schoolYear,
       state,
@@ -384,6 +444,74 @@ class AcademicHistoryService {
       origin: imported ? 'system_import' : recordData.origin || 'manual',
       updatedByUserId: actorId(actor),
     };
+    if (isTransferred) {
+      // Valores anuais são metas curriculares; nunca representam, por si só,
+      // o período efetivamente cursado antes da transferência.
+      sanitized.annualWorkload = null;
+      sanitized.annualFrequency = null;
+      sanitized.schoolDays = null;
+      sanitized.completedWorkloadHours = manualDocumentedMetrics
+        ? asOptionalText(recordData.completedWorkloadHours)
+        : null;
+      sanitized.completedFrequency = manualDocumentedMetrics
+        ? optionalNumber(recordData.completedFrequency, { min: 0, max: 100 })
+        : null;
+      sanitized.completedSchoolDays = manualDocumentedMetrics
+        ? optionalNumber(recordData.completedSchoolDays, { min: 0 })
+        : null;
+      sanitized.transferDate = asOptionalDate(recordData.transferDate);
+      sanitized.metricsMeasuredThrough = manualDocumentedMetrics
+        ? asOptionalDate(recordData.metricsMeasuredThrough)
+        : null;
+      sanitized.metricsSource = manualDocumentedMetrics ? 'manual_documented' : '';
+    } else {
+      sanitized.completedWorkloadHours = null;
+      sanitized.completedFrequency = null;
+      sanitized.completedSchoolDays = null;
+      sanitized.transferDate = null;
+      sanitized.metricsMeasuredThrough = null;
+      sanitized.metricsSource = '';
+    }
+    return sanitized;
+  }
+
+  async _enrichTransferredMetrics({ schoolId, studentId, recordData }) {
+    if (recordData.finalResult !== 'Transferido'
+      || recordData.institutionType !== 'current_school') {
+      return recordData;
+    }
+    const enrollment = await this._resolveEnrollment({
+      studentId,
+      schoolId,
+      schoolYear: recordData.schoolYear,
+      enrollmentId: recordData.enrollmentId,
+    });
+    const classId = idOf(recordData.classId) || idOf(enrollment?.class);
+    if (!classId || !recordData.transferDate) return recordData;
+
+    const attendance = await Attendance.find({
+      schoolId,
+      classId,
+      date: {
+        $gte: new Date(Date.UTC(recordData.schoolYear, 0, 1)),
+        $lt: new Date(Date.UTC(recordData.schoolYear + 1, 0, 1)),
+      },
+      'records.studentId': studentId,
+    }).select('date records');
+    const measured = summarizeAttendanceForStudent({
+      attendance,
+      studentId,
+      schoolYear: recordData.schoolYear,
+      measuredThrough: recordData.transferDate,
+    });
+    // O produto não possui diário de horas-aula ministradas. Por isso a carga
+    // horária cumprida fica explicitamente indisponível até existir evidência.
+    recordData.completedWorkloadHours = null;
+    recordData.completedFrequency = measured.completedFrequency;
+    recordData.completedSchoolDays = measured.completedSchoolDays;
+    recordData.metricsMeasuredThrough = measured.metricsMeasuredThrough;
+    recordData.metricsSource = measured.completedSchoolDays ? 'attendance_records' : '';
+    return recordData;
   }
 
   _assertUnique(student, recordData, ignoredRecordId = null) {
@@ -409,6 +537,7 @@ class AcademicHistoryService {
     requireManager(actor);
     const student = await this._student(studentId, schoolId);
     const sanitized = this._sanitizeRecord(recordData, actor, { imported });
+    await this._enrichTransferredMetrics({ schoolId, studentId, recordData: sanitized });
     this._assertUnique(student, sanitized);
     sanitized.createdByUserId = actorId(actor);
     student.academicHistory.push(sanitized);
@@ -426,6 +555,7 @@ class AcademicHistoryService {
       { ...record.toObject(), ...recordData },
       actor
     );
+    await this._enrichTransferredMetrics({ schoolId, studentId, recordData: sanitized });
     this._assertUnique(student, sanitized, recordId);
     Object.assign(record, sanitized);
     student._user = actor;
@@ -452,6 +582,7 @@ module.exports._private = {
   canManage,
   dedupeGrades,
   normalize,
+  summarizeAttendanceForStudent,
   parseTermOrder,
   roundOne,
 };
