@@ -146,10 +146,28 @@ const activityBookSchema = new Schema(
       type: Schema.Types.ObjectId,
       ref: 'School',
     }],
+    // Cadernos globais sao criados por PlatformAdmin. Cadernos da escola
+    // (sourceType 'school', ex.: publicados pelo editor de atividades) sao
+    // criados por um usuario da escola e usam createdByUserId.
     createdBy: {
       type: Schema.Types.ObjectId,
       ref: 'PlatformAdmin',
-      required: true,
+      default: null,
+      required() {
+        return this.sourceType !== 'school';
+      },
+    },
+    createdByUserId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    // Design de origem quando o caderno foi publicado pelo editor.
+    activityDesignId: {
+      type: Schema.Types.ObjectId,
+      ref: 'ActivityDesign',
+      default: null,
+      index: true,
     },
     processingError: {
       type: String,

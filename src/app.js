@@ -69,6 +69,7 @@ const reportCardRoutes = require('./api/routes/reportCard.routes.js');
 const classActivityRoutes = require('./api/routes/classActivity.routes.js');
 const platformRoutes = require('./api/routes/platform.routes.js');
 const schoolActivityLibraryRoutes = require('./api/routes/schoolActivityLibrary.routes.js');
+const schoolActivityDesignRoutes = require('./api/routes/schoolActivityDesign.routes.js');
 const activityCorrectionRoutes = require('./api/routes/activityCorrection.routes.js');
 
 const app = express();
@@ -172,6 +173,7 @@ app.use('/api/report-cards', reportCardRoutes);
 app.use('/api/activities', classActivityRoutes);
 
 app.use('/api/school/activity-library', schoolActivityLibraryRoutes);
+app.use('/api/school/activity-designs', schoolActivityDesignRoutes);
 app.use('/api/school', activityCorrectionRoutes);
 
 app.use('/api/absence-justifications', require('./api/routes/absenceJustification.routes.js'));
