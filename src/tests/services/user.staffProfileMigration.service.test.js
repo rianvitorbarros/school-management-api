@@ -3,6 +3,29 @@ const assert = require('node:assert/strict');
 
 const UserService = require('../../api/services/user.service');
 const SchoolUserMembership = require('../../api/models/schoolUserMembership.model');
+const StaffProfile = require('../../api/models/staffProfile.model');
+
+test('never resolves a legacy profile from another school', async (t) => {
+  let query;
+  t.mock.method(StaffProfile, 'findOne', async (value) => {
+    query = value;
+    return { _id: 'profile-batista' };
+  });
+
+  const membership = await UserService._legacyMembership(
+    { _id: 'legacy-user', school_id: 'school-batista', staffProfiles: ['other-school-profile'] },
+    'school-batista',
+  );
+
+  assert.deepEqual(query, {
+    user: 'legacy-user',
+    $or: [
+      { school_id: 'school-batista' },
+      { school_id: { $exists: false } },
+    ],
+  });
+  assert.equal(membership.staffProfile, 'profile-batista');
+});
 
 test('creates a school-scoped membership only when a legacy profile is explicitly completed', async (t) => {
   const saved = [];

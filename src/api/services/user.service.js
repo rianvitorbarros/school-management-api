@@ -33,7 +33,14 @@ class UserService {
 
   async _legacyMembership(user, schoolId) {
     if (idOf(user.school_id) !== idOf(schoolId)) return null;
-    const profile = user.staffProfiles?.[0] || await StaffProfile.findOne({ user: user._id });
+    // Profiles created after the membership model are school-scoped. Older
+    // profiles without school_id can only belong to the user's primary legacy
+    // school, which was verified above; never fall back to a profile from a
+    // different institution.
+    const profile = await StaffProfile.findOne({
+      user: user._id,
+      $or: [{ school_id: schoolId }, { school_id: { $exists: false } }],
+    });
     return { user: user._id, school_id: schoolId, roles: user.roles || [], status: user.status || 'Inativo', staffProfile: profile?._id || null, legacy: true };
   }
 
