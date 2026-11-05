@@ -69,6 +69,43 @@ class UserService {
     }
   }
 
+  async _attachProfileToMembership(user, membership, schoolId, profile) {
+    if (!membership.legacy) {
+      await SchoolUserMembership.findByIdAndUpdate(
+        membership._id,
+        { staffProfile: profile._id },
+        { runValidators: true },
+      );
+      return;
+    }
+
+    // A legacy employee has a virtual membership derived from user.school_id.
+    // Persist it only when the school administrator explicitly completes the
+    // functional profile. This keeps historical accounts usable without
+    // inventing employment data and makes the new profile school-scoped.
+    await SchoolUserMembership.findOneAndUpdate(
+      { user: user._id, school_id: schoolId },
+      {
+        $set: {
+          roles: membership.roles || [],
+          status: membership.status || 'Ativo',
+          staffProfile: profile._id,
+        },
+      },
+      { new: true, upsert: true, setDefaultsOnInsert: true, runValidators: true },
+    );
+
+    // Preserve compatibility for legacy readers of the account's primary
+    // school. Profiles created for another school never go on the global user.
+    const existingProfiles = user.staffProfiles || [];
+    if (idOf(user.school_id) === idOf(schoolId) &&
+        !existingProfiles.some((item) => idOf(item) === idOf(profile._id))) {
+      user.staffProfiles = existingProfiles;
+      user.staffProfiles.push(profile._id);
+      await user.save();
+    }
+  }
+
   async createStaff(data, schoolId) {
     const existing = await this._findMatchingIdentity(data);
     if (existing) {
@@ -152,7 +189,24 @@ class UserService {
     }
     if (memberships <= 1) { Object.assign(user, pick(data, identityFields)); delete user.password; await user.save(); }
     const profileData = pick(data, profileFields);
-    if (Object.keys(profileData).length && membership.staffProfile) await StaffProfile.findByIdAndUpdate(membership.staffProfile, profileData, { runValidators: true });
+    if (Object.keys(profileData).length && membership.staffProfile) {
+      await StaffProfile.findByIdAndUpdate(
+        membership.staffProfile,
+        profileData,
+        { runValidators: true },
+      );
+    } else if (data.createStaffProfile === true) {
+      // A legacy account can receive a school-local profile during an edit.
+      // The flag is intentional: an ordinary contact edit must not fabricate
+      // admission date, employment type or remuneration data.
+      const profile = await this._createProfile(data, user._id, schoolId);
+      try {
+        await this._attachProfileToMembership(user, membership, schoolId, profile);
+      } catch (error) {
+        await StaffProfile.findByIdAndDelete(profile._id);
+        throw error;
+      }
+    }
     const scoped = await this.getUserById(id, schoolId);
     appEmitter.emit('user:updated', scoped);
     return scoped;
