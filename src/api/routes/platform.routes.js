@@ -15,6 +15,7 @@ const r2StorageService = require('../services/r2Storage.service');
 const activityLibraryService = require('../services/activityLibrary.service');
 const activityPrintService = require('../services/activityPrint.service');
 const activityThumbnailService = require('../services/activityThumbnail.service');
+const mediaAssetService = require('../services/mediaAsset.service');
 const {
   requireSuperAdmin,
   verifyPlatformToken,
@@ -1421,6 +1422,17 @@ router.get('/activity-books', asyncRoute(async (req, res) => {
     ...result,
     items: result.items.map(normalizeActivityBookResponse),
   });
+}));
+
+// Acervo global de imagens (curadoria do AcademyHub para o editor de atividades).
+router.post('/media-assets', genericUpload, asyncRoute(async (req, res) => {
+  const result = await mediaAssetService.uploadGlobalAsset(req.platformAdmin.id, req.file, req.body || {});
+  return res.status(201).json(result);
+}));
+
+router.delete('/media-assets/:assetId', asyncRoute(async (req, res) => {
+  const result = await mediaAssetService.archiveGlobalAsset(req.params.assetId);
+  return res.status(200).json(result);
 }));
 
 router.post('/activity-books', pdfUpload, asyncRoute(async (req, res) => {
