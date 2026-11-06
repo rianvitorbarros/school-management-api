@@ -92,6 +92,16 @@ router.post('/:designId/assets', runUpload(assetUpload), handle(
   201
 ));
 
+router.post('/:designId/assets/from-library', handle(
+  (req) => activityDesignService.attachLibraryAsset(
+    req.params.designId,
+    req.user,
+    req.body?.mediaAssetId
+  ),
+  'Erro ao adicionar imagem do acervo.',
+  201
+));
+
 router.get('/:designId/assets/:assetId/content', handle(async (req, res) => {
   const { buffer, contentType } = await activityDesignService.getAssetContent(
     req.params.designId,

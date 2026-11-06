@@ -40,6 +40,8 @@ const activityDesignAssetSchema = new Schema(
     originalName: { type: String, trim: true, default: '' },
     size: { type: Number, min: 0, default: 0 },
     uploadedByUserId: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    // Imagem do acervo (MediaAsset) de onde o arquivo veio.
+    mediaAssetId: { type: Schema.Types.ObjectId, ref: 'MediaAsset', default: null },
     createdAt: { type: Date, default: Date.now },
   },
   { _id: false }

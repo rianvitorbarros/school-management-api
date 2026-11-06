@@ -21,6 +21,8 @@ function createHarness() {
     pages: [],
     uploads: [],
     deletedKeys: [],
+    mediaCreated: [],
+    library: [],
   };
 
   class FakeActivityDesign {
@@ -115,7 +117,27 @@ function createHarness() {
     },
   };
 
+  const mediaAssetService = {
+    async createFromUpload(actor, file, body) {
+      const _id = new mongoose.Types.ObjectId();
+      const key = `schools/${actor.school_id}/media/${_id}.png`;
+      state.uploads.push({ key, size: file.buffer.length, contentType: 'image/png' });
+      state.mediaCreated.push({ _id, key, visibility: body.visibility });
+      return { asset: { _id, key, contentType: 'image/png' } };
+    },
+    async getForUse(id) {
+      const media = state.library.find((item) => String(item._id) === String(id));
+      if (!media) {
+        const error = new Error('Imagem nao encontrada.');
+        error.status = 404;
+        throw error;
+      }
+      return media;
+    },
+  };
+
   const service = new ActivityDesignService({
+    mediaAssetService,
     ActivityDesign: FakeActivityDesign,
     ActivityBook: FakeActivityBook,
     ActivityPage: FakeActivityPage,
@@ -227,7 +249,9 @@ test('uploadAsset aceita PNG e recusa arquivo que nao e imagem', async () => {
 
   const asset = await service.uploadAsset(created.id, teacher, { buffer: PNG_BYTES, originalname: 'elefante.png' });
   assert.equal(asset.contentType, 'image/png');
-  assert.match(state.uploads[0].key, new RegExp(`^schools/.+/activity-designs/${created.id}/assets/.+\\.png$`));
+  assert.match(state.uploads[0].key, /^schools\/.+\/media\/.+\.png$/);
+  assert.equal(state.mediaCreated[0].visibility, 'private', 'upload vai para o acervo privado do professor');
+  assert.ok(asset.mediaAssetId);
 
   await assert.rejects(
     service.uploadAsset(created.id, teacher, { buffer: Buffer.from('<html>oi</html>'), originalname: 'x.png' }),
@@ -327,6 +351,27 @@ test('archiveDesign arquiva o caderno publicado', async () => {
   assert.equal(state.books[0].status, 'archived');
   await assert.rejects(
     service.updateDesign(created.id, teacher, { title: 'x' }),
+    (error) => error.status === 404
+  );
+});
+
+test('attachLibraryAsset reaproveita a imagem do acervo sem reenviar e nao duplica', async () => {
+  const { service, state, teacher } = createHarness();
+  const created = await service.createDesign(teacher, { title: 'Atividade' });
+  const mediaId = new mongoose.Types.ObjectId();
+  state.library.push({ _id: mediaId, key: 'schools/x/media/abc.png', contentType: 'image/png', title: 'Elefante', size: 10 });
+
+  const first = await service.attachLibraryAsset(created.id, teacher, String(mediaId));
+  const second = await service.attachLibraryAsset(created.id, teacher, String(mediaId));
+  assert.equal(first.assetId, second.assetId);
+  assert.equal(state.uploads.length, 0);
+
+  const design = await service.getDesign(created.id, teacher);
+  assert.equal(design.assets.length, 1);
+  assert.equal(design.assets[0].mediaAssetId, String(mediaId));
+
+  await assert.rejects(
+    service.attachLibraryAsset(created.id, teacher, String(new mongoose.Types.ObjectId())),
     (error) => error.status === 404
   );
 });

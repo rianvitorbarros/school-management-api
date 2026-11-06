@@ -251,6 +251,7 @@ class ActivityDesignService {
     ActivityBook = ActivityBookModel,
     ActivityPage = ActivityPageModel,
     r2StorageService = r2StorageServiceInstance,
+    mediaAssetService = null,
     thumbnailMaker = null,
     now = () => new Date(),
   } = {}) {
@@ -258,8 +259,15 @@ class ActivityDesignService {
     this.ActivityBook = ActivityBook;
     this.ActivityPage = ActivityPage;
     this.r2StorageService = r2StorageService;
+    this.mediaAssetServiceOverride = mediaAssetService;
     this.thumbnailMaker = thumbnailMaker || ((buffer) => this.makeThumbnail(buffer));
     this.now = now;
+  }
+
+  get mediaAssetService() {
+    // Carregado sob demanda para evitar dependencia circular nos testes.
+    // eslint-disable-next-line global-require
+    return this.mediaAssetServiceOverride || require('./mediaAsset.service');
   }
 
   getEditorConfig() {
@@ -338,6 +346,7 @@ class ActivityDesignService {
       })),
       assets: (plain.assets || []).map((asset) => ({
         assetId: asset.assetId,
+        mediaAssetId: asset.mediaAssetId ? String(asset.mediaAssetId) : null,
         contentType: asset.contentType || '',
         originalName: asset.originalName || '',
         size: asset.size || 0,
@@ -547,7 +556,7 @@ class ActivityDesignService {
   }
 
   async uploadAsset(designId, actor, file) {
-    const { design, schoolId, actorId } = await this.loadDesign(designId, actor, { forWrite: true });
+    const { design, actorId } = await this.loadDesign(designId, actor, { forWrite: true });
     if (!file || !Buffer.isBuffer(file.buffer) || file.buffer.length === 0) {
       throw createHttpError('Envie um arquivo de imagem.', 400, 'DESIGN_ASSET_REQUIRED');
     }
@@ -562,17 +571,54 @@ class ActivityDesignService {
       throw createHttpError('Limite de imagens desta atividade atingido.', 400, 'DESIGN_TOO_MANY_ASSETS');
     }
 
-    const assetId = crypto.randomUUID();
-    const key = `${STORAGE_BASE_PREFIX}/${schoolId}/activity-designs/${String(design._id)}/assets/${assetId}.${extensionForContentType(contentType)}`;
-    await this.r2StorageService.uploadBuffer({ key, buffer: file.buffer, contentType });
-
-    const asset = {
-      assetId,
-      key,
-      contentType,
+    // O arquivo vai para o acervo da escola (privado do professor) e a
+    // atividade guarda uma referencia, para ele reaproveitar depois.
+    const { asset: media } = await this.mediaAssetService.createFromUpload(actor, file, {
+      visibility: 'private',
+    });
+    return this.appendDesignAsset(design, {
+      key: media.key,
+      contentType: media.contentType || contentType,
       originalName: normalizeText(file.originalname).slice(0, 200),
       size: file.buffer.length,
       uploadedByUserId: actorId,
+      mediaAssetId: media._id,
+    });
+  }
+
+  /** Coloca uma imagem do acervo (MediaAsset) na atividade, sem reenviar o arquivo. */
+  async attachLibraryAsset(designId, actor, mediaAssetId) {
+    const { design, actorId } = await this.loadDesign(designId, actor, { forWrite: true });
+    const existing = (design.assets || []).find(
+      (item) => item.mediaAssetId && String(item.mediaAssetId) === normalizeText(mediaAssetId)
+    );
+    if (existing) {
+      return {
+        assetId: existing.assetId,
+        contentType: existing.contentType || '',
+        originalName: existing.originalName || '',
+        size: existing.size || 0,
+        mediaAssetId: String(existing.mediaAssetId),
+      };
+    }
+    if ((design.assets || []).length >= MAX_ASSETS_PER_DESIGN) {
+      throw createHttpError('Limite de imagens desta atividade atingido.', 400, 'DESIGN_TOO_MANY_ASSETS');
+    }
+    const media = await this.mediaAssetService.getForUse(mediaAssetId, actor);
+    return this.appendDesignAsset(design, {
+      key: media.key,
+      contentType: media.contentType || '',
+      originalName: normalizeText(media.title).slice(0, 200),
+      size: media.size || 0,
+      uploadedByUserId: actorId,
+      mediaAssetId: media._id,
+    });
+  }
+
+  async appendDesignAsset(design, fields) {
+    const asset = {
+      assetId: crypto.randomUUID(),
+      ...fields,
       createdAt: this.now(),
     };
     design.assets = [...(design.assets || []), asset];
@@ -580,10 +626,11 @@ class ActivityDesignService {
     await design.save();
 
     return {
-      assetId,
-      contentType,
+      assetId: asset.assetId,
+      contentType: asset.contentType,
       originalName: asset.originalName,
       size: asset.size,
+      mediaAssetId: asset.mediaAssetId ? String(asset.mediaAssetId) : null,
     };
   }
 
