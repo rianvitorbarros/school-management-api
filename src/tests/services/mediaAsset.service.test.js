@@ -395,3 +395,57 @@ test('iaraImage: 402 de creditos pre-pagos esgotados tambem vira mensagem de fat
     (error) => error.code === 'IARA_IMAGE_BILLING_REQUIRED'
   );
 });
+
+test('iaraImage: provedor vertex usa o endpoint da Agent Platform com a chave no cabecalho', async () => {
+  const previous = { ...process.env };
+  try {
+    process.env.IARA_IMAGE_PROVIDER = 'vertex';
+    process.env.VERTEX_API_KEY = 'chave-vertex';
+    delete process.env.VERTEX_PROJECT_ID;
+    assert.equal(iaraImageClient.getProvider(), 'vertex');
+    assert.equal(
+      iaraImageClient.buildEndpoint('gemini-2.5-flash-image'),
+      'https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash-image:generateContent'
+    );
+    process.env.VERTEX_PROJECT_ID = 'meu-projeto';
+    assert.equal(
+      iaraImageClient.buildEndpoint('gemini-2.5-flash-image'),
+      'https://aiplatform.googleapis.com/v1/projects/meu-projeto/locations/global/publishers/google/models/gemini-2.5-flash-image:generateContent'
+    );
+
+    let seen = null;
+    const result = await iaraImageClient.generateImage({
+      prompt: 'x',
+      sleepFn: async () => {},
+      httpClient: {
+        async post(url, body, config) {
+          seen = { url, key: config.headers['x-goog-api-key'] };
+          return { data: { candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: PNG_BYTES.toString('base64') } }] } }] } };
+        },
+      },
+    });
+    assert.match(seen.url, /aiplatform\.googleapis\.com\/v1\/projects\/meu-projeto/);
+    assert.equal(seen.key, 'chave-vertex');
+    assert.ok(result.buffer.equals(PNG_BYTES));
+  } finally {
+    process.env = previous;
+  }
+});
+
+test('iaraImage: 403 de permissao na Vertex vira mensagem clara sem repetir', async () => {
+  let calls = 0;
+  const denied = Object.assign(new Error('403'), {
+    response: { status: 403, data: { error: { status: 'PERMISSION_DENIED', message: "Permission 'aiplatform.endpoints.predict' denied" } } },
+  });
+  await assert.rejects(
+    iaraImageClient.generateImage({
+      prompt: 'x',
+      apiKey: 'k',
+      provider: 'vertex',
+      sleepFn: async () => {},
+      httpClient: { async post() { calls += 1; throw denied; } },
+    }),
+    (error) => error.code === 'IARA_IMAGE_NOT_AUTHORIZED' && error.status === 503
+  );
+  assert.equal(calls, 1);
+});
