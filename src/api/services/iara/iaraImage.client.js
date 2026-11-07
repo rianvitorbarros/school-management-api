@@ -69,7 +69,7 @@ const IMAGE_STYLES = {
     kind: 'lineart',
     prompt:
       'A black and white coloring page line drawing for young children (ages 3 to 6) of: {subject}. '
-      + 'Thick, clean, closed black outlines on a pure white background. No shading, no gray tones, '
+      + 'Very thick, bold, clean, closed black outlines (like a thick marker, uniform line width) on a pure white background. No shading, no gray tones, '
       + 'no color fill, no hatching, no text, no letters, no numbers, no border or frame. '
       + 'Simple, friendly, cute shapes with large areas to color. Single subject centered with margin around it.',
   },
