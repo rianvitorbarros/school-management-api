@@ -11,7 +11,7 @@
 
 const axios = require('axios');
 
-const DEFAULT_IMAGE_MODELS = ['gemini-2.5-flash-image'];
+const DEFAULT_IMAGE_MODELS = ['gemini-2.5-flash-image', 'gemini-3.1-flash-image'];
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 
@@ -79,6 +79,18 @@ function buildPrompt(subject, style) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * 429 por cota ZERADA (projeto no plano gratuito, sem faturamento): os modelos
+ * de imagem do Gemini nao tem cota gratuita, entao tentar de novo ou trocar de
+ * modelo nao adianta. Diferente de um 429 por excesso momentaneo de pedidos.
+ */
+function isBillingQuotaError(error) {
+  const status = Number(error?.response?.status || error?.status);
+  if (status !== 429) return false;
+  const message = String(error?.response?.data?.error?.message || error?.message || '');
+  return /limit:\s*0\b/.test(message) || /free_tier/i.test(message) || /billing/i.test(message);
+}
+
+/**
  * Gera UMA imagem. Retorna { buffer, mimeType, model }.
  * `parts` extras (ex.: imagem de referencia) podem ser enviados para a
  * entrega de "trazer elemento de um print".
@@ -143,6 +155,18 @@ async function generateImage({
         };
       } catch (error) {
         if (error instanceof IaraImageError && error.code === 'IARA_IMAGE_BLOCKED') throw error;
+        if (isBillingQuotaError(error)) {
+          console.error(
+            '[Iara imagem] O projeto da GEMINI_API_KEY nao tem cota para gerar imagens '
+            + '(plano gratuito). Ative o faturamento do projeto no Google AI Studio / Google Cloud.',
+            { model }
+          );
+          throw new IaraImageError(
+            'A geracao de imagens da Iara ainda nao esta liberada para esta escola. '
+            + 'Avise o suporte do AcademyHub.',
+            { statusCode: 503, code: 'IARA_IMAGE_BILLING_REQUIRED', cause: error }
+          );
+        }
         lastError = error;
         const status = Number(error?.response?.status || error?.status);
         const retryable = RETRYABLE_STATUS.has(status)
@@ -180,4 +204,5 @@ module.exports = {
   getImageModelNames,
   IMAGE_STYLES,
   IaraImageError,
+  isBillingQuotaError,
 };

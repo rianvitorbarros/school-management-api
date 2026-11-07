@@ -338,3 +338,44 @@ test('processador real: fundo branco vira transparente e o traço preto continua
   const info = await defaultImageProcessor.inspect(thumbnail);
   assert.equal(info.width, 40, 'imagem pequena nao e ampliada');
 });
+
+test('iaraImage: 429 por cota zerada (plano gratuito) vira mensagem clara e nao repete tentativas', async () => {
+  let calls = 0;
+  const quotaError = Object.assign(new Error('Request failed with status code 429'), {
+    response: {
+      status: 429,
+      data: {
+        error: {
+          message: 'You exceeded your current quota... Quota exceeded for metric: '
+            + 'generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, model: gemini-2.5-flash-preview-image',
+        },
+      },
+    },
+  });
+  await assert.rejects(
+    iaraImageClient.generateImage({
+      prompt: 'x',
+      apiKey: 'k',
+      sleepFn: async () => {},
+      httpClient: { async post() { calls += 1; throw quotaError; } },
+    }),
+    (error) => error.code === 'IARA_IMAGE_BILLING_REQUIRED' && error.status === 503
+  );
+  assert.equal(calls, 1, 'nao insiste nem troca de modelo quando a cota e zero');
+});
+
+test('iaraImage: 429 momentaneo continua sendo tratado como demanda alta', async () => {
+  const busy = Object.assign(new Error('429'), {
+    response: { status: 429, data: { error: { message: 'Resource has been exhausted (e.g. check quota).' } } },
+  });
+  assert.equal(iaraImageClient.isBillingQuotaError(busy), false);
+  await assert.rejects(
+    iaraImageClient.generateImage({
+      prompt: 'x',
+      apiKey: 'k',
+      sleepFn: async () => {},
+      httpClient: { async post() { throw busy; } },
+    }),
+    (error) => error.code === 'IARA_IMAGE_BUSY'
+  );
+});
