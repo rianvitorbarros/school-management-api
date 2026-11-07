@@ -449,3 +449,35 @@ test('iaraImage: 403 de permissao na Vertex vira mensagem clara sem repetir', as
   );
   assert.equal(calls, 1);
 });
+
+test('iaraImage: IARA_IMAGE_API_KEY tem prioridade e GEMINI_API_KEY fica como reserva', async () => {
+  const previous = { ...process.env };
+  try {
+    delete process.env.IARA_IMAGE_PROVIDER;
+    delete process.env.VERTEX_API_KEY;
+    process.env.GEMINI_API_KEY = 'chave-texto';
+    delete process.env.IARA_IMAGE_API_KEY;
+    assert.equal(iaraImageClient.getApiKey(), 'chave-texto');
+    assert.equal(iaraImageClient.getApiKeySource(), 'GEMINI_API_KEY');
+
+    process.env.IARA_IMAGE_API_KEY = '  chave-imagens  ';
+    assert.equal(iaraImageClient.getApiKey(), 'chave-imagens');
+    assert.equal(iaraImageClient.getApiKeySource(), 'IARA_IMAGE_API_KEY');
+    assert.equal(iaraImageClient.getApiKey('vertex'), 'chave-imagens');
+
+    let usedKey = null;
+    await iaraImageClient.generateImage({
+      prompt: 'x',
+      sleepFn: async () => {},
+      httpClient: {
+        async post(url, body, config) {
+          usedKey = config.headers['x-goog-api-key'];
+          return { data: { candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: PNG_BYTES.toString('base64') } }] } }] } };
+        },
+      },
+    });
+    assert.equal(usedKey, 'chave-imagens', 'a geração de imagens usa a chave dedicada');
+  } finally {
+    process.env = previous;
+  }
+});

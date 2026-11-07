@@ -84,7 +84,9 @@ Arquivar nao apaga o arquivo: atividades que ja usam a imagem continuam imprimin
 ## Iara: geracao de imagens
 
 - Modelo de imagem do Gemini via REST. Dois provedores (`IARA_IMAGE_PROVIDER`):
-  - `gemini` (padrao): API do Google AI Studio (`generativelanguage.googleapis.com`) com a `GEMINI_API_KEY`.
+  - `gemini` (padrao): API do Google AI Studio (`generativelanguage.googleapis.com`) com a **`IARA_IMAGE_API_KEY`**,
+    chave exclusiva para imagens (se vazia, usa a `GEMINI_API_KEY` da Iara de texto). Use um projeto com saldo:
+    projetos no plano gratuito tem cota de imagem 0.
     Usa o saldo **pre-pago do AI Studio**; nao consome os creditos do Google Cloud.
   - `vertex`: Agent Platform / Vertex AI (`aiplatform.googleapis.com`) com `VERTEX_API_KEY`
     (opcionais `VERTEX_PROJECT_ID` e `VERTEX_LOCATION`, padrao `global`). Cobrado na **conta de faturamento do
