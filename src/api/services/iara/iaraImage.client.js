@@ -9,9 +9,12 @@
 //                         (Agent Platform / Vertex AI, cobrada na conta de
 //                         faturamento do Google Cloud — onde caem os creditos
 //                         do Google Developer Program)
-//   GEMINI_API_KEY        chave ja usada pela Iara (provedor 'gemini')
+//   IARA_IMAGE_API_KEY    chave EXCLUSIVA para gerar imagens (recomendado). Fica
+//                         separada da GEMINI_API_KEY, usada pela Iara de texto,
+//                         para que cada uma tenha seu projeto/saldo/limites.
+//   GEMINI_API_KEY        usada para imagens apenas se IARA_IMAGE_API_KEY estiver vazia
 //   VERTEX_API_KEY        chave da Agent Platform (provedor 'vertex'; se vazia,
-//                         usa GEMINI_API_KEY)
+//                         usa IARA_IMAGE_API_KEY e depois GEMINI_API_KEY)
 //   VERTEX_PROJECT_ID     opcional: projeto do Google Cloud (modo com projeto)
 //   VERTEX_LOCATION       opcional: regiao (padrao 'global')
 //   IARA_IMAGE_MODELS     lista separada por virgula (padrao: gemini-2.5-flash-image)
@@ -29,9 +32,23 @@ function getProvider() {
     : 'gemini';
 }
 
+function clean(value) {
+  return String(value || '').trim();
+}
+
+/** Chave usada para gerar imagens (nunca exposta em respostas ou logs). */
 function getApiKey(provider = getProvider()) {
-  if (provider === 'vertex') return process.env.VERTEX_API_KEY || process.env.GEMINI_API_KEY;
-  return process.env.GEMINI_API_KEY;
+  const imageKey = clean(process.env.IARA_IMAGE_API_KEY);
+  const geminiKey = clean(process.env.GEMINI_API_KEY);
+  if (provider === 'vertex') return clean(process.env.VERTEX_API_KEY) || imageKey || geminiKey;
+  return imageKey || geminiKey;
+}
+
+/** Nome da variável de onde veio a chave (para mensagens de log). */
+function getApiKeySource(provider = getProvider()) {
+  if (provider === 'vertex' && clean(process.env.VERTEX_API_KEY)) return 'VERTEX_API_KEY';
+  if (clean(process.env.IARA_IMAGE_API_KEY)) return 'IARA_IMAGE_API_KEY';
+  return 'GEMINI_API_KEY';
 }
 
 /** URL do generateContent para o provedor configurado. */
@@ -203,7 +220,7 @@ async function generateImage({
         if (error instanceof IaraImageError && error.code === 'IARA_IMAGE_BLOCKED') throw error;
         if (isPermissionError(error)) {
           console.error(
-            '[Iara imagem] A chave nao tem permissao para usar o modelo de imagem '
+            `[Iara imagem] A chave ${getApiKeySource(provider)} nao tem permissao para usar o modelo de imagem `
             + `(${provider}). Na Agent Platform/Vertex AI, vincule a chave a uma conta de servico `
             + 'com o papel "Vertex AI User" e confira as restricoes de API da chave.',
             { model, message: String(error?.response?.data?.error?.message || '').slice(0, 200) }
@@ -216,7 +233,7 @@ async function generateImage({
         }
         if (isBillingQuotaError(error)) {
           console.error(
-            '[Iara imagem] O projeto da GEMINI_API_KEY esta sem cota ou sem creditos para gerar imagens '
+            `[Iara imagem] O projeto da chave ${getApiKeySource(provider)} esta sem cota ou sem creditos para gerar imagens `
             + '(plano gratuito ou creditos pre-pagos esgotados). Verifique o faturamento em https://ai.studio/projects.',
             { model }
           );
@@ -265,6 +282,8 @@ module.exports = {
   IaraImageError,
   isBillingQuotaError,
   isPermissionError,
+  getApiKey,
+  getApiKeySource,
   buildEndpoint,
   getProvider,
 };
