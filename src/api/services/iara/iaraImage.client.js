@@ -5,14 +5,47 @@
 // no projeto foi descontinuado e nao expoe a saida de imagem).
 //
 // Configuracao por .env:
-//   GEMINI_API_KEY        chave ja usada pela Iara
+//   IARA_IMAGE_PROVIDER   'gemini' (padrao, API do Google AI Studio) ou 'vertex'
+//                         (Agent Platform / Vertex AI, cobrada na conta de
+//                         faturamento do Google Cloud — onde caem os creditos
+//                         do Google Developer Program)
+//   GEMINI_API_KEY        chave ja usada pela Iara (provedor 'gemini')
+//   VERTEX_API_KEY        chave da Agent Platform (provedor 'vertex'; se vazia,
+//                         usa GEMINI_API_KEY)
+//   VERTEX_PROJECT_ID     opcional: projeto do Google Cloud (modo com projeto)
+//   VERTEX_LOCATION       opcional: regiao (padrao 'global')
 //   IARA_IMAGE_MODELS     lista separada por virgula (padrao: gemini-2.5-flash-image)
 //   IARA_IMAGE_TIMEOUT_MS prazo por chamada (padrao: 90000)
 
 const axios = require('axios');
 
-const DEFAULT_IMAGE_MODELS = ['gemini-2.5-flash-image'];
+const DEFAULT_IMAGE_MODELS = ['gemini-2.5-flash-image', 'gemini-3.1-flash-image'];
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+const VERTEX_BASE = 'https://aiplatform.googleapis.com/v1';
+
+function getProvider() {
+  return String(process.env.IARA_IMAGE_PROVIDER || 'gemini').trim().toLowerCase() === 'vertex'
+    ? 'vertex'
+    : 'gemini';
+}
+
+function getApiKey(provider = getProvider()) {
+  if (provider === 'vertex') return process.env.VERTEX_API_KEY || process.env.GEMINI_API_KEY;
+  return process.env.GEMINI_API_KEY;
+}
+
+/** URL do generateContent para o provedor configurado. */
+function buildEndpoint(model, provider = getProvider()) {
+  const encoded = encodeURIComponent(model);
+  if (provider !== 'vertex') return `${API_BASE}/${encoded}:generateContent`;
+  const project = String(process.env.VERTEX_PROJECT_ID || '').trim();
+  const location = String(process.env.VERTEX_LOCATION || 'global').trim() || 'global';
+  if (project) {
+    return `${VERTEX_BASE}/projects/${encodeURIComponent(project)}/locations/${encodeURIComponent(location)}`
+      + `/publishers/google/models/${encoded}:generateContent`;
+  }
+  return `${VERTEX_BASE}/publishers/google/models/${encoded}:generateContent`;
+}
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 
 class IaraImageError extends Error {
@@ -36,7 +69,7 @@ const IMAGE_STYLES = {
     kind: 'lineart',
     prompt:
       'A black and white coloring page line drawing for young children (ages 3 to 6) of: {subject}. '
-      + 'Thick, clean, closed black outlines on a pure white background. No shading, no gray tones, '
+      + 'Very thick, bold, clean, closed black outlines (like a thick marker, uniform line width) on a pure white background. No shading, no gray tones, '
       + 'no color fill, no hatching, no text, no letters, no numbers, no border or frame. '
       + 'Simple, friendly, cute shapes with large areas to color. Single subject centered with margin around it.',
   },
@@ -79,6 +112,30 @@ function buildPrompt(subject, style) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * Problema de faturamento do projeto (nao adianta repetir):
+ * - 402: creditos pre-pagos esgotados;
+ * - 429 por cota ZERADA (projeto no plano gratuito, sem faturamento): os modelos
+ * de imagem do Gemini nao tem cota gratuita, entao tentar de novo ou trocar de
+ * modelo nao adianta. Diferente de um 429 por excesso momentaneo de pedidos.
+ */
+function isPermissionError(error) {
+  const status = Number(error?.response?.status || error?.status);
+  return status === 403
+    && /PERMISSION_DENIED|has not been used|is disabled|aiplatform\.endpoints\.predict/i.test(
+      `${error?.response?.data?.error?.status || ''} ${error?.response?.data?.error?.message || ''}`
+    );
+}
+
+function isBillingQuotaError(error) {
+  const status = Number(error?.response?.status || error?.status);
+  const message = String(error?.response?.data?.error?.message || error?.message || '');
+  // 402: faturamento pre-pago com creditos esgotados.
+  if (status === 402 || /credits are depleted|prepayment/i.test(message)) return true;
+  if (status !== 429) return false;
+  return /limit:\s*0\b/.test(message) || /free_tier/i.test(message) || /billing/i.test(message);
+}
+
+/**
  * Gera UMA imagem. Retorna { buffer, mimeType, model }.
  * `parts` extras (ex.: imagem de referencia) podem ser enviados para a
  * entrega de "trazer elemento de um print".
@@ -88,7 +145,8 @@ async function generateImage({
   extraParts = [],
   aspectRatio = '1:1',
   httpClient = axios,
-  apiKey = process.env.GEMINI_API_KEY,
+  provider = getProvider(),
+  apiKey = getApiKey(provider),
   sleepFn = sleep,
 }) {
   if (!apiKey) {
@@ -105,7 +163,7 @@ async function generateImage({
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
         const response = await httpClient.post(
-          `${API_BASE}/${encodeURIComponent(model)}:generateContent`,
+          buildEndpoint(model, provider),
           {
             contents: [{ role: 'user', parts: [...extraParts, { text: prompt }] }],
             generationConfig: {
@@ -143,6 +201,31 @@ async function generateImage({
         };
       } catch (error) {
         if (error instanceof IaraImageError && error.code === 'IARA_IMAGE_BLOCKED') throw error;
+        if (isPermissionError(error)) {
+          console.error(
+            '[Iara imagem] A chave nao tem permissao para usar o modelo de imagem '
+            + `(${provider}). Na Agent Platform/Vertex AI, vincule a chave a uma conta de servico `
+            + 'com o papel "Vertex AI User" e confira as restricoes de API da chave.',
+            { model, message: String(error?.response?.data?.error?.message || '').slice(0, 200) }
+          );
+          throw new IaraImageError(
+            'A geracao de imagens da Iara ainda nao esta liberada para esta escola. '
+            + 'Avise o suporte do AcademyHub.',
+            { statusCode: 503, code: 'IARA_IMAGE_NOT_AUTHORIZED', cause: error }
+          );
+        }
+        if (isBillingQuotaError(error)) {
+          console.error(
+            '[Iara imagem] O projeto da GEMINI_API_KEY esta sem cota ou sem creditos para gerar imagens '
+            + '(plano gratuito ou creditos pre-pagos esgotados). Verifique o faturamento em https://ai.studio/projects.',
+            { model }
+          );
+          throw new IaraImageError(
+            'A geracao de imagens da Iara ainda nao esta liberada para esta escola. '
+            + 'Avise o suporte do AcademyHub.',
+            { statusCode: 503, code: 'IARA_IMAGE_BILLING_REQUIRED', cause: error }
+          );
+        }
         lastError = error;
         const status = Number(error?.response?.status || error?.status);
         const retryable = RETRYABLE_STATUS.has(status)
@@ -180,4 +263,8 @@ module.exports = {
   getImageModelNames,
   IMAGE_STYLES,
   IaraImageError,
+  isBillingQuotaError,
+  isPermissionError,
+  buildEndpoint,
+  getProvider,
 };

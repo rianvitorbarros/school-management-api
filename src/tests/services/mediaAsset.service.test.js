@@ -338,3 +338,114 @@ test('processador real: fundo branco vira transparente e o traço preto continua
   const info = await defaultImageProcessor.inspect(thumbnail);
   assert.equal(info.width, 40, 'imagem pequena nao e ampliada');
 });
+
+test('iaraImage: 429 por cota zerada (plano gratuito) vira mensagem clara e nao repete tentativas', async () => {
+  let calls = 0;
+  const quotaError = Object.assign(new Error('Request failed with status code 429'), {
+    response: {
+      status: 429,
+      data: {
+        error: {
+          message: 'You exceeded your current quota... Quota exceeded for metric: '
+            + 'generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, model: gemini-2.5-flash-preview-image',
+        },
+      },
+    },
+  });
+  await assert.rejects(
+    iaraImageClient.generateImage({
+      prompt: 'x',
+      apiKey: 'k',
+      sleepFn: async () => {},
+      httpClient: { async post() { calls += 1; throw quotaError; } },
+    }),
+    (error) => error.code === 'IARA_IMAGE_BILLING_REQUIRED' && error.status === 503
+  );
+  assert.equal(calls, 1, 'nao insiste nem troca de modelo quando a cota e zero');
+});
+
+test('iaraImage: 429 momentaneo continua sendo tratado como demanda alta', async () => {
+  const busy = Object.assign(new Error('429'), {
+    response: { status: 429, data: { error: { message: 'Resource has been exhausted (e.g. check quota).' } } },
+  });
+  assert.equal(iaraImageClient.isBillingQuotaError(busy), false);
+  await assert.rejects(
+    iaraImageClient.generateImage({
+      prompt: 'x',
+      apiKey: 'k',
+      sleepFn: async () => {},
+      httpClient: { async post() { throw busy; } },
+    }),
+    (error) => error.code === 'IARA_IMAGE_BUSY'
+  );
+});
+
+test('iaraImage: 402 de creditos pre-pagos esgotados tambem vira mensagem de faturamento', async () => {
+  const depleted = Object.assign(new Error('402'), {
+    response: { status: 402, data: { error: { message: 'Your prepayment credits are depleted. Please go to AI Studio...' } } },
+  });
+  assert.equal(iaraImageClient.isBillingQuotaError(depleted), true);
+  await assert.rejects(
+    iaraImageClient.generateImage({
+      prompt: 'x',
+      apiKey: 'k',
+      sleepFn: async () => {},
+      httpClient: { async post() { throw depleted; } },
+    }),
+    (error) => error.code === 'IARA_IMAGE_BILLING_REQUIRED'
+  );
+});
+
+test('iaraImage: provedor vertex usa o endpoint da Agent Platform com a chave no cabecalho', async () => {
+  const previous = { ...process.env };
+  try {
+    process.env.IARA_IMAGE_PROVIDER = 'vertex';
+    process.env.VERTEX_API_KEY = 'chave-vertex';
+    delete process.env.VERTEX_PROJECT_ID;
+    assert.equal(iaraImageClient.getProvider(), 'vertex');
+    assert.equal(
+      iaraImageClient.buildEndpoint('gemini-2.5-flash-image'),
+      'https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash-image:generateContent'
+    );
+    process.env.VERTEX_PROJECT_ID = 'meu-projeto';
+    assert.equal(
+      iaraImageClient.buildEndpoint('gemini-2.5-flash-image'),
+      'https://aiplatform.googleapis.com/v1/projects/meu-projeto/locations/global/publishers/google/models/gemini-2.5-flash-image:generateContent'
+    );
+
+    let seen = null;
+    const result = await iaraImageClient.generateImage({
+      prompt: 'x',
+      sleepFn: async () => {},
+      httpClient: {
+        async post(url, body, config) {
+          seen = { url, key: config.headers['x-goog-api-key'] };
+          return { data: { candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: PNG_BYTES.toString('base64') } }] } }] } };
+        },
+      },
+    });
+    assert.match(seen.url, /aiplatform\.googleapis\.com\/v1\/projects\/meu-projeto/);
+    assert.equal(seen.key, 'chave-vertex');
+    assert.ok(result.buffer.equals(PNG_BYTES));
+  } finally {
+    process.env = previous;
+  }
+});
+
+test('iaraImage: 403 de permissao na Vertex vira mensagem clara sem repetir', async () => {
+  let calls = 0;
+  const denied = Object.assign(new Error('403'), {
+    response: { status: 403, data: { error: { status: 'PERMISSION_DENIED', message: "Permission 'aiplatform.endpoints.predict' denied" } } },
+  });
+  await assert.rejects(
+    iaraImageClient.generateImage({
+      prompt: 'x',
+      apiKey: 'k',
+      provider: 'vertex',
+      sleepFn: async () => {},
+      httpClient: { async post() { calls += 1; throw denied; } },
+    }),
+    (error) => error.code === 'IARA_IMAGE_NOT_AUTHORIZED' && error.status === 503
+  );
+  assert.equal(calls, 1);
+});

@@ -83,7 +83,13 @@ Arquivar nao apaga o arquivo: atividades que ja usam a imagem continuam imprimin
 
 ## Iara: geracao de imagens
 
-- Modelo de imagem do Gemini via REST (`generativelanguage.googleapis.com`), com a mesma `GEMINI_API_KEY` da Iara.
+- Modelo de imagem do Gemini via REST. Dois provedores (`IARA_IMAGE_PROVIDER`):
+  - `gemini` (padrao): API do Google AI Studio (`generativelanguage.googleapis.com`) com a `GEMINI_API_KEY`.
+    Usa o saldo **pre-pago do AI Studio**; nao consome os creditos do Google Cloud.
+  - `vertex`: Agent Platform / Vertex AI (`aiplatform.googleapis.com`) com `VERTEX_API_KEY`
+    (opcionais `VERTEX_PROJECT_ID` e `VERTEX_LOCATION`, padrao `global`). Cobrado na **conta de faturamento do
+    Google Cloud**, onde caem os creditos mensais do Google Developer Program. A chave precisa estar vinculada a uma
+    conta de servico com o papel "Vertex AI User".
 - `.env`: `IARA_IMAGE_MODELS` (padrao `gemini-2.5-flash-image`), `IARA_IMAGE_TIMEOUT_MS` (padrao 90000),
   `IARA_IMAGE_DAILY_LIMIT_PER_SCHOOL` (padrao 60 imagens/dia por escola).
 - Estilos: `lineart` (para colorir: traco preto grosso, fundo branco, sem texto), `color` (cartoon simples colorido) e
@@ -91,4 +97,7 @@ Arquivar nao apaga o arquivo: atividades que ja usam a imagem continuam imprimin
 - Para `lineart` e `icon` o fundo branco vira transparente por padrao, para o desenho poder ficar por cima de formas.
 - As imagens geradas sao salvas no acervo da escola (`source: ai-generated`, com `prompt`, `style` e `model`) e ficam
   disponiveis para todos os professores.
-- Erros: `429 IARA_IMAGE_DAILY_LIMIT`, `422 IARA_IMAGE_BLOCKED` (conteudo recusado), `503 IARA_IMAGE_NOT_CONFIGURED`/`IARA_IMAGE_BUSY`.
+- Erros: `429 IARA_IMAGE_DAILY_LIMIT`, `422 IARA_IMAGE_BLOCKED` (conteudo recusado), `503 IARA_IMAGE_NOT_CONFIGURED`/`IARA_IMAGE_BUSY`,
+  `503 IARA_IMAGE_BILLING_REQUIRED` (plano gratuito sem cota de imagem ou creditos pre-pagos esgotados) e
+  `503 IARA_IMAGE_NOT_AUTHORIZED` (chave sem permissao no modelo). Os dois ultimos param na primeira tentativa e
+  explicam a causa no log do servidor.
