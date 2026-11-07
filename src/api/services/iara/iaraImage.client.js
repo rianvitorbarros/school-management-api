@@ -79,14 +79,18 @@ function buildPrompt(subject, style) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * 429 por cota ZERADA (projeto no plano gratuito, sem faturamento): os modelos
+ * Problema de faturamento do projeto (nao adianta repetir):
+ * - 402: creditos pre-pagos esgotados;
+ * - 429 por cota ZERADA (projeto no plano gratuito, sem faturamento): os modelos
  * de imagem do Gemini nao tem cota gratuita, entao tentar de novo ou trocar de
  * modelo nao adianta. Diferente de um 429 por excesso momentaneo de pedidos.
  */
 function isBillingQuotaError(error) {
   const status = Number(error?.response?.status || error?.status);
-  if (status !== 429) return false;
   const message = String(error?.response?.data?.error?.message || error?.message || '');
+  // 402: faturamento pre-pago com creditos esgotados.
+  if (status === 402 || /credits are depleted|prepayment/i.test(message)) return true;
+  if (status !== 429) return false;
   return /limit:\s*0\b/.test(message) || /free_tier/i.test(message) || /billing/i.test(message);
 }
 
@@ -157,8 +161,8 @@ async function generateImage({
         if (error instanceof IaraImageError && error.code === 'IARA_IMAGE_BLOCKED') throw error;
         if (isBillingQuotaError(error)) {
           console.error(
-            '[Iara imagem] O projeto da GEMINI_API_KEY nao tem cota para gerar imagens '
-            + '(plano gratuito). Ative o faturamento do projeto no Google AI Studio / Google Cloud.',
+            '[Iara imagem] O projeto da GEMINI_API_KEY esta sem cota ou sem creditos para gerar imagens '
+            + '(plano gratuito ou creditos pre-pagos esgotados). Verifique o faturamento em https://ai.studio/projects.',
             { model }
           );
           throw new IaraImageError(

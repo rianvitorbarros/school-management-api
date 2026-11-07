@@ -379,3 +379,19 @@ test('iaraImage: 429 momentaneo continua sendo tratado como demanda alta', async
     (error) => error.code === 'IARA_IMAGE_BUSY'
   );
 });
+
+test('iaraImage: 402 de creditos pre-pagos esgotados tambem vira mensagem de faturamento', async () => {
+  const depleted = Object.assign(new Error('402'), {
+    response: { status: 402, data: { error: { message: 'Your prepayment credits are depleted. Please go to AI Studio...' } } },
+  });
+  assert.equal(iaraImageClient.isBillingQuotaError(depleted), true);
+  await assert.rejects(
+    iaraImageClient.generateImage({
+      prompt: 'x',
+      apiKey: 'k',
+      sleepFn: async () => {},
+      httpClient: { async post() { throw depleted; } },
+    }),
+    (error) => error.code === 'IARA_IMAGE_BILLING_REQUIRED'
+  );
+});
