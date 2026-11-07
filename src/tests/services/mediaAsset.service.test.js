@@ -481,3 +481,34 @@ test('iaraImage: IARA_IMAGE_API_KEY tem prioridade e GEMINI_API_KEY fica como re
     process.env = previous;
   }
 });
+
+test('iaraImage: erros nunca carregam a chave da API (nada de vazar nos logs)', async () => {
+  const util = require('node:util');
+  const secret = 'AQ.chave-super-secreta-123';
+  for (const status of [403, 402, 500]) {
+    const axiosLike = Object.assign(new Error(`Request failed with status code ${status}`), {
+      config: { headers: { 'x-goog-api-key': secret } },
+      request: { _header: `POST / HTTP/1.1\r\nx-goog-api-key: ${secret}\r\n` },
+      response: {
+        status,
+        data: { error: { status: 'X', message: status === 403 ? "Permission 'aiplatform.endpoints.predict' denied" : 'Your prepayment credits are depleted' } },
+      },
+    });
+    let caught;
+    try {
+      await iaraImageClient.generateImage({
+        prompt: 'x',
+        apiKey: secret,
+        provider: status === 403 ? 'vertex' : 'gemini',
+        sleepFn: async () => {},
+        httpClient: { async post() { throw axiosLike; } },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    assert.ok(caught, `status ${status} deve falhar`);
+    const printed = util.inspect(caught, { depth: 10 }) + JSON.stringify(caught.cause);
+    assert.equal(printed.includes(secret), false, `a chave vazou no erro do status ${status}`);
+    assert.equal(caught.cause.status, status);
+  }
+});

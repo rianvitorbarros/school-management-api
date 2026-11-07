@@ -31,7 +31,13 @@ function handle(fn, fallbackMessage, successStatus = 200) {
       return res.status(successStatus).json(result);
     } catch (error) {
       const status = error.status || error.statusCode || 500;
-      if (status >= 500) console.error('[MediaAsset]', error);
+      if (status >= 500) console.error('[MediaAsset]', {
+          code: error.code || null,
+          status,
+          message: error.message,
+          cause: error.cause && !error.cause.config ? error.cause : undefined,
+          stack: error.stack,
+        });
       return res.status(status).json({
         message: status >= 500 && !error.code ? fallbackMessage : (error.message || fallbackMessage),
         code: error.code || 'MEDIA_ASSET_ERROR',

@@ -37,7 +37,13 @@ function handle(fn, fallbackMessage, successStatus = 200) {
     } catch (error) {
       const status = error.status || error.statusCode || 500;
       if (status >= 500) {
-        console.error('[ActivityDesign]', error);
+        console.error('[ActivityDesign]', {
+          code: error.code || null,
+          status,
+          message: error.message,
+          cause: error.cause && !error.cause.config ? error.cause : undefined,
+          stack: error.stack,
+        });
       }
       return res.status(status).json({
         message: status >= 500 ? fallbackMessage : (error.message || fallbackMessage),

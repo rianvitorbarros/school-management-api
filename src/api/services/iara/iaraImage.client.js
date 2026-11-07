@@ -65,6 +65,21 @@ function buildEndpoint(model, provider = getProvider()) {
 }
 const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 
+/**
+ * Resumo seguro de um erro HTTP: SO status e mensagem. Nunca guarda o objeto
+ * do axios, que carrega a requisicao inteira (inclusive o cabecalho com a
+ * chave da API) e acabaria impresso nos logs.
+ */
+function safeCause(error) {
+  if (!error) return null;
+  if (error instanceof IaraImageError) return error.cause;
+  return {
+    status: Number(error?.response?.status || error?.status) || null,
+    apiStatus: error?.response?.data?.error?.status || null,
+    message: String(error?.response?.data?.error?.message || error?.message || '').slice(0, 300),
+  };
+}
+
 class IaraImageError extends Error {
   constructor(message, { statusCode = 502, code = 'IARA_IMAGE_ERROR', cause = null } = {}) {
     super(message);
@@ -72,7 +87,7 @@ class IaraImageError extends Error {
     this.status = statusCode;
     this.statusCode = statusCode;
     this.code = code;
-    this.cause = cause;
+    this.cause = safeCause(cause);
   }
 }
 
