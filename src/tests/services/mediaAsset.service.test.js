@@ -17,6 +17,7 @@ function matches(doc, query) {
     if (key === '$and') return condition.every((part) => matches(doc, part));
     if (key === '$or') return condition.some((part) => matches(doc, part));
     const value = doc[key];
+    if (condition === null) return value === null || value === undefined;
     if (condition instanceof RegExp) {
       return Array.isArray(value) ? value.some((item) => condition.test(item)) : condition.test(value || '');
     }
@@ -192,6 +193,25 @@ test('listAssets mostra global + escola + minhas privadas e filtra por busca e e
 
   const global = await service.listAssets(teacher, { scope: 'global' });
   assert.deepEqual(global.items.map((item) => item.title), ['Estrela']);
+});
+
+test('listAssets esconde os icones do pacote integrado e filtra uploads do professor', async () => {
+  const { service, state, schoolId, teacher } = createHarness();
+  const base = { status: 'active', key: 'k', kind: 'color', tags: [] };
+  state.docs.push(
+    { _id: new mongoose.Types.ObjectId(), ...base, visibility: 'global', schoolId: null, source: 'curated', title: 'Relogio', iconKey: 'fluent-flat:alarm-clock' },
+    { _id: new mongoose.Types.ObjectId(), ...base, visibility: 'private', schoolId, createdByUserId: teacher.id, source: 'upload', title: 'Print do livro' },
+    { _id: new mongoose.Types.ObjectId(), ...base, visibility: 'school', schoolId, createdByUserId: teacher.id, source: 'ai-generated', title: 'Elefante da Iara' },
+  );
+
+  const all = await service.listAssets(teacher);
+  assert.deepEqual(all.items.map((item) => item.title).sort(), ['Elefante da Iara', 'Print do livro']);
+
+  const uploads = await service.listAssets(teacher, { scope: 'mine', source: 'upload' });
+  assert.deepEqual(uploads.items.map((item) => item.title), ['Print do livro']);
+
+  const withIcons = await service.listAssets(teacher, { includeIcons: 'true', scope: 'global' });
+  assert.deepEqual(withIcons.items.map((item) => item.title), ['Relogio']);
 });
 
 test('generateWithAi salva as imagens no acervo da escola com o pedido e o estilo', async () => {
