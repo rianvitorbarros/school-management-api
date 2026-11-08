@@ -59,6 +59,24 @@ Limites: 20 paginas, 200 elementos por pagina, 2 MB de JSON por design.
 |---|---|---|
 | POST | `/:designId/assets` | Upload pelo editor: o arquivo vai para o acervo (`MediaAsset`, **privado** do professor) e a atividade guarda a referencia |
 | POST | `/:designId/assets/from-library` | `{ mediaAssetId }`: coloca uma imagem do acervo na atividade sem reenviar o arquivo (idempotente) |
+| POST | `/:designId/assets/from-icon` | `{ iconId }`: coloca um icone do pacote integrado na atividade (cria o `MediaAsset` global do icone no primeiro uso) |
+
+# Pacote de icones — `/api/school/icons`
+
+Biblioteca integrada e gratuita (nao consome a cota da Iara): **Fluent Emoji Flat** (Microsoft, licenca MIT),
+1587 icones em 8 categorias, com nomes e palavras-chave em portugues do Unicode CLDR (Unicode License v3).
+O catalogo fica em `assets/icon-packs/fluent-emoji-flat.json.gz` e e carregado em memoria.
+A busca ignora acentos e maiusculas ("maca" encontra "maçã").
+
+| Metodo | Rota | Descricao |
+|---|---|---|
+| GET | `/info` | Fonte, licenca, total e categorias com contagem |
+| GET | `/` | Lista (`search`, `category`, `page`, `limit` ate 200) -> `{ items: [{ id, name, category, keywords }], page, limit, total }` |
+| GET | `/:iconId/svg` | SVG do icone (`image/svg+xml`, cache de 7 dias) |
+
+Ao colocar um icone numa atividade, a API rasteriza o SVG em PNG 512px (miniatura 256px), envia para
+`platform/icons/fluent-flat/<id>.png` no R2 e cria um `MediaAsset` global (`source: curated`,
+`iconKey: fluent-flat:<id>`, indice unico). Os usos seguintes reaproveitam o mesmo registro.
 
 # Acervo de imagens — `/api/school/media-assets`
 

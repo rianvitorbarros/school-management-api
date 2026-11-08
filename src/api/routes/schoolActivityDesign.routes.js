@@ -108,6 +108,13 @@ router.post('/:designId/assets/from-library', handle(
   201
 ));
 
+router.post('/:designId/assets/from-icon', handle(async (req) => {
+  // eslint-disable-next-line global-require
+  const iconPackService = require('../services/iconPack.service');
+  const media = await iconPackService.ensureMediaAsset(req.body?.iconId);
+  return activityDesignService.attachLibraryAsset(req.params.designId, req.user, String(media._id));
+}, 'Erro ao adicionar ícone.', 201));
+
 router.get('/:designId/assets/:assetId/content', handle(async (req, res) => {
   const { buffer, contentType } = await activityDesignService.getAssetContent(
     req.params.designId,

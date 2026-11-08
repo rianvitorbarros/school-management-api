@@ -57,6 +57,8 @@ const mediaAssetSchema = new Schema(
     style: { type: String, trim: true, default: '' },
     model: { type: String, trim: true, default: '' },
     attribution: { type: String, trim: true, default: '' },
+    // Ícone do pacote integrado (ex.: 'fluent-flat:elephant'), criado sob demanda.
+    iconKey: { type: String, trim: true, default: undefined },
     usageCount: { type: Number, min: 0, default: 0 },
     status: { type: String, enum: MEDIA_ASSET_STATUSES, default: 'active', index: true },
     archivedAt: { type: Date, default: null },
@@ -67,6 +69,7 @@ const mediaAssetSchema = new Schema(
 mediaAssetSchema.index({ schoolId: 1, status: 1, visibility: 1, createdAt: -1 });
 mediaAssetSchema.index({ visibility: 1, status: 1, createdAt: -1 });
 mediaAssetSchema.index({ schoolId: 1, source: 1, createdAt: -1 });
+mediaAssetSchema.index({ iconKey: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('MediaAsset', mediaAssetSchema);
 module.exports.MEDIA_ASSET_VISIBILITIES = MEDIA_ASSET_VISIBILITIES;
