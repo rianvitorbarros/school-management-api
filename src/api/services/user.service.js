@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const User = require('../models/user.model');
 const StaffProfile = require('../models/staffProfile.model');
 const SchoolUserMembership = require('../models/schoolUserMembership.model');
@@ -52,9 +53,14 @@ class UserService {
   async _toSchoolUser(user, membership) {
     const plain = user.toObject ? user.toObject() : { ...user };
     delete plain.password;
-    const profile = membership.staffProfile && typeof membership.staffProfile === 'object'
-      ? membership.staffProfile
-      : membership.staffProfile ? await StaffProfile.findById(membership.staffProfile).populate('enabledSubjects') : null;
+    // `staffProfile` pode chegar populado (membership real) ou como ObjectId cru
+    // (membership legado). ObjectId tambem e `typeof 'object'`, entao o teste
+    // precisa excluir explicitamente o id para nao devolve-lo como perfil.
+    const ref = membership.staffProfile;
+    const isPopulated = ref && typeof ref === 'object' && !mongoose.isObjectIdOrHexString(ref);
+    const profile = isPopulated
+      ? ref
+      : ref ? await StaffProfile.findById(ref).populate('enabledSubjects') : null;
     return { ...plain, school_id: idOf(membership.school_id), roles: membership.roles || [], status: membership.status || 'Inativo', staffProfiles: profile ? [profile] : [] };
   }
 

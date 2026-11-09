@@ -88,3 +88,34 @@ test('never appends another school profile to the global legacy user', async (t)
 
   assert.deepEqual(user.staffProfiles, []);
 });
+
+test('resolves a legacy membership whose staffProfile is a raw ObjectId', async (t) => {
+  const mongoose = require('mongoose');
+  const profileId = new mongoose.Types.ObjectId();
+  const profileDoc = { _id: profileId, mainRole: 'Professor', employmentType: 'Efetivo (CLT)' };
+  let requestedId;
+  t.mock.method(StaffProfile, 'findById', (id) => {
+    requestedId = id;
+    return { populate: async () => profileDoc };
+  });
+
+  const result = await UserService._toSchoolUser(
+    { _id: 'legacy-user', fullName: 'Legado', staffProfiles: [profileId] },
+    { school_id: 'school-batista', roles: ['Professor'], status: 'Ativo', staffProfile: profileId, legacy: true },
+  );
+
+  assert.equal(requestedId, profileId);
+  assert.deepEqual(result.staffProfiles, [profileDoc]);
+});
+
+test('keeps an already populated membership staffProfile without refetching', async (t) => {
+  const profileDoc = { _id: 'profile-batista', mainRole: 'Coordenador' };
+  t.mock.method(StaffProfile, 'findById', () => assert.fail('must not refetch a populated profile'));
+
+  const result = await UserService._toSchoolUser(
+    { _id: 'member-user', staffProfiles: [] },
+    { school_id: 'school-batista', roles: ['Coordenador'], status: 'Ativo', staffProfile: profileDoc },
+  );
+
+  assert.deepEqual(result.staffProfiles, [profileDoc]);
+});
