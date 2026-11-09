@@ -137,6 +137,11 @@ class IconPackService {
     return { items, page, limit, total };
   }
 
+  /** O icone existe no pacote? (usado para validar atividades) */
+  has(iconId) {
+    return this.load().byId.has(String(iconId || ''));
+  }
+
   getSvg(iconId) {
     const item = this.load().byId.get(String(iconId || ''));
     if (!item) throw createHttpError('Ícone não encontrado.', 404, 'ICON_NOT_FOUND');

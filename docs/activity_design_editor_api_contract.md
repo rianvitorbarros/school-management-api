@@ -74,7 +74,11 @@ A busca ignora acentos e maiusculas ("maca" encontra "maçã").
 | GET | `/` | Lista (`search`, `category`, `page`, `limit` ate 200) -> `{ items: [{ id, name, category, keywords }], page, limit, total }` |
 | GET | `/:iconId/svg` | SVG do icone (`image/svg+xml`, cache de 7 dias) |
 
-Ao colocar um icone numa atividade, a API rasteriza o SVG em PNG 512px (miniatura 256px), envia para
+A partir do app 2.4.18 o pacote vem embutido no proprio app: o icone e um elemento `image` com
+`props.iconId` (sem `assetId`), desenhado no computador do professor. A API so confere se o id existe
+no pacote (`INVALID_DESIGN_ICON` caso contrario). O fluxo abaixo continua valendo para versoes anteriores.
+
+Ao colocar um icone numa atividade (fluxo antigo), a API rasteriza o SVG em PNG 512px (miniatura 256px), envia para
 `platform/icons/fluent-flat/<id>.png` no R2 e cria um `MediaAsset` global (`source: curated`,
 `iconKey: fluent-flat:<id>`, indice unico). Os usos seguintes reaproveitam o mesmo registro.
 
