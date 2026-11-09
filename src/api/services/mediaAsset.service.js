@@ -263,6 +263,8 @@ class MediaAssetService {
     if (filters.source && ['upload', 'ai-generated', 'ai-from-reference', 'curated'].includes(String(filters.source))) {
       query.source = String(filters.source);
     }
+    // Icones do pacote integrado ficam na aba Icones do editor, nao no acervo.
+    if (String(filters.includeIcons || '') !== 'true') query.iconKey = null;
     const search = normalizeText(filters.search);
     if (search) {
       const regex = new RegExp(escapeRegex(search), 'i');

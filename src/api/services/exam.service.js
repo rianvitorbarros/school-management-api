@@ -5,6 +5,7 @@ const Evaluation = require('../models/evaluation.model');
 const ClassGrade = require('../models/grade.model');
 const Class = require('../models/class.model');
 const Periodo = require('../models/periodo.model');
+const SchoolYearService = require('./schoolyear.service');
 const mongoose = require('mongoose');
 const crypto = require('crypto');
 const appEmitter = require('../../loaders/eventEmitter');
@@ -886,6 +887,107 @@ class ExamService {
         };
     }
 
+    /**
+     * Cria a avaliação da prova no Diário de notas (uma por prova), para a
+     * nota da correção aparecer no Diário e no app dos responsáveis.
+     * Falhas não impedem salvar a prova, mas ficam registradas no log.
+     */
+    async _ensureGradebookEvaluation(exam, schoolId) {
+        if (!exam || getObjectIdString(exam.settings?.evaluationId)) return exam;
+        try {
+            const termInfo = await SchoolYearService.findTermByDate(schoolId, exam.applicationDate);
+            const evaluation = await Evaluation.create({
+                school: schoolId,
+                classInfo: exam.class_id?._id || exam.class_id,
+                teacher: exam.teacher_id?._id || exam.teacher_id,
+                subject: exam.subject_id?._id || exam.subject_id,
+                title: exam.title,
+                type: 'EXAM',
+                date: exam.applicationDate,
+                maxScore: exam.totalValue,
+                term: termInfo.termName,
+                schoolYear: termInfo.schoolYearId,
+            });
+            exam.settings = exam.settings || {};
+            exam.settings.evaluationId = evaluation._id;
+            if (typeof exam.markModified === 'function') exam.markModified('settings');
+            await exam.save();
+        } catch (error) {
+            this._logWarn('Falha ao criar a avaliação da prova no Diário de notas.', {
+                examId: getObjectIdString(exam._id),
+                error: error?.message || String(error),
+            });
+        }
+        return exam;
+    }
+
+    /** Mantém título, data e valor da avaliação do Diário iguais aos da prova. */
+    async _syncGradebookEvaluation(exam, schoolId) {
+        const evaluationId = getObjectIdString(exam?.settings?.evaluationId);
+        if (!evaluationId) return;
+        try {
+            const termInfo = await SchoolYearService.findTermByDate(schoolId, exam.applicationDate);
+            await Evaluation.updateOne(
+                { _id: evaluationId, school: schoolId },
+                {
+                    $set: {
+                        title: exam.title,
+                        date: exam.applicationDate,
+                        maxScore: exam.totalValue,
+                        subject: exam.subject_id?._id || exam.subject_id,
+                        term: termInfo.termName,
+                        schoolYear: termInfo.schoolYearId,
+                    },
+                }
+            );
+        } catch (error) {
+            this._logWarn('Falha ao atualizar a avaliação da prova no Diário de notas.', {
+                examId: getObjectIdString(exam?._id),
+                error: error?.message || String(error),
+            });
+        }
+    }
+
+    /** Lança (ou atualiza) no Diário a nota da folha corrigida. */
+    async _syncSheetGradeToGradebook(exam, sheet, schoolId, grade) {
+        const evaluationId = getObjectIdString(exam?.settings?.evaluationId);
+        const value = Number(grade);
+        if (!evaluationId || !sheet?.student_id || !Number.isFinite(value) || value < 0) return;
+        try {
+            const studentId = sheet.student_id?._id || sheet.student_id;
+            const enrollment = await Enrollment.findOne({
+                school_id: schoolId,
+                class: exam.class_id?._id || exam.class_id,
+                student: studentId,
+                status: 'Ativa',
+            }).select('_id').lean();
+            if (!enrollment) {
+                this._logWarn('Aluno sem matrícula ativa na turma; nota não lançada no Diário.', {
+                    examId: getObjectIdString(exam._id),
+                    studentId: getObjectIdString(studentId),
+                });
+                return;
+            }
+            await ClassGrade.findOneAndUpdate(
+                { evaluation: evaluationId, student: studentId },
+                {
+                    $set: {
+                        enrollment: enrollment._id,
+                        value,
+                        updatedAt: new Date(),
+                    },
+                },
+                { upsert: true, setDefaultsOnInsert: true }
+            );
+        } catch (error) {
+            this._logWarn('Falha ao lançar a nota da prova no Diário de notas.', {
+                examId: getObjectIdString(exam?._id),
+                sheetId: getObjectIdString(sheet?._id),
+                error: error?.message || String(error),
+            });
+        }
+    }
+
     async createExam(data, schoolId) {
         this._logInfo('Criando prova.', {
             schoolId,
@@ -905,33 +1007,15 @@ class ExamService {
             school_id: schoolId,
             termId: termContext.termId || null,
             termResolution: termContext.termResolution,
+            // Cada prova tem a sua própria avaliação no Diário (uma cópia não
+            // pode herdar a da prova original).
+            settings: { ...(data?.settings || {}), evaluationId: null },
         });
         await this._attachOmrLayoutToExamIfNeeded(exam);
 
         const savedExam = await exam.save();
 
-        try {
-            const evaluation = new Evaluation({
-                school_id: schoolId,
-                class_id: savedExam.class_id,
-                subject_id: savedExam.subject_id,
-                title: savedExam.title,
-                type: 'EXAM',
-                date: savedExam.applicationDate,
-                maxScore: savedExam.totalValue,
-            });
-
-            const savedEval = await evaluation.save();
-
-            savedExam.settings = savedExam.settings || {};
-            savedExam.settings.evaluationId = savedEval._id;
-            await savedExam.save();
-        } catch (e) {
-            this._logWarn('Falha ao criar/vincular evaluation da prova.', {
-                examId: savedExam._id?.toString?.(),
-                error: e?.message || String(e),
-            });
-        }
+        await this._ensureGradebookEvaluation(savedExam, schoolId);
 
         return await this.getExamByIdForResponse(savedExam._id, schoolId);
     }
@@ -967,6 +1051,7 @@ class ExamService {
         await this._attachOmrLayoutToExamIfNeeded(exam);
 
         const savedExam = await exam.save();
+        await this._syncGradebookEvaluation(savedExam, schoolId);
         return await this.getExamByIdForResponse(savedExam._id, schoolId);
     }
 
@@ -1233,6 +1318,7 @@ class ExamService {
 
         await this._attachOmrLayoutToExamIfNeeded(reusedExam);
         await reusedExam.save();
+        await this._ensureGradebookEvaluation(reusedExam, schoolId);
 
         return await this.getExamByIdForResponse(reusedExam._id, schoolId);
     }
@@ -1849,20 +1935,7 @@ class ExamService {
 
         const exam = await Exam.findById(sheet.exam_id);
 
-        if (exam?.settings?.evaluationId) {
-            await ClassGrade.findOneAndUpdate(
-                {
-                    school_id: schoolId,
-                    evaluationId: exam.settings.evaluationId,
-                    studentId: sheet.student_id,
-                },
-                {
-                    value: validatedGrades.grade,
-                    dateRecorded: new Date(),
-                },
-                { upsert: true }
-            );
-        }
+        await this._syncSheetGradeToGradebook(exam, sheet, schoolId, validatedGrades.grade);
 
         return sheet;
     }
