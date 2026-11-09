@@ -202,6 +202,29 @@ test('sanitizePages valida tipo, geometria e imagem sem arquivo', () => {
   );
 });
 
+test('sanitizePages aceita icone do pacote embutido sem arquivo e recusa icone inexistente', () => {
+  const pages = sanitizePages([{
+    pageKey: 'p1',
+    elements: [{ ...textElement('ico'), type: 'image', props: { iconId: 'elephant', fit: 'contain' } }],
+  }], { assetIds: new Set() });
+  assert.equal(pages[0].elements[0].props.iconId, 'elephant');
+
+  assert.throws(
+    () => sanitizePages([{
+      pageKey: 'p1',
+      elements: [{ ...textElement('ico'), type: 'image', props: { iconId: 'nao-existe' } }],
+    }], { assetIds: new Set() }),
+    (error) => error.code === 'INVALID_DESIGN_ICON'
+  );
+  assert.throws(
+    () => sanitizePages([{
+      pageKey: 'p1',
+      elements: [{ ...textElement('img'), type: 'image', props: {} }],
+    }], { assetIds: new Set() }),
+    (error) => error.code === 'INVALID_DESIGN_ASSET'
+  );
+});
+
 test('createDesign comeca com uma pagina em branco e cabecalho reservado', async () => {
   const { service, teacher } = createHarness();
   const design = await service.createDesign(teacher, { title: 'Avaliacao de Matematica', subject: 'Matematica' });

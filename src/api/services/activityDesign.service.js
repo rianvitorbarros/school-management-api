@@ -5,6 +5,7 @@ const ActivityDesignModel = require('../models/activityDesign.model');
 const ActivityBookModel = require('../models/activityBook.model');
 const ActivityPageModel = require('../models/activityPage.model');
 const r2StorageServiceInstance = require('./r2Storage.service');
+const iconPackService = require('./iconPack.service');
 
 const {
   ACTIVITY_DESIGN_ELEMENT_TYPES,
@@ -162,7 +163,18 @@ function sanitizeElement(rawElement, { pageIndex, elementIndex, assetIds }) {
 
   if (type === 'image') {
     const assetId = normalizeText(props.assetId);
-    if (!assetId || !assetIds.has(assetId)) {
+    const iconId = normalizeText(props.iconId);
+    if (assetId) {
+      if (!assetIds.has(assetId)) {
+        throw createHttpError(`Imagem sem arquivo enviado (${where}).`, 400, 'INVALID_DESIGN_ASSET');
+      }
+    } else if (iconId) {
+      // Icone do pacote embutido no app: desenhado no proprio computador,
+      // sem arquivo na atividade. So aceitamos ids que existem no pacote.
+      if (!iconPackService.has(iconId)) {
+        throw createHttpError(`Icone desconhecido (${where}).`, 400, 'INVALID_DESIGN_ICON');
+      }
+    } else {
       throw createHttpError(`Imagem sem arquivo enviado (${where}).`, 400, 'INVALID_DESIGN_ASSET');
     }
   }
