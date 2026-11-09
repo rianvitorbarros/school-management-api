@@ -495,8 +495,12 @@ class HorarioService {
             throw new Error('Professor não encontrado ou não possui um perfil de funcionário.');
         }
 
-        const isEnabled = teacher.staffProfiles.some(profile => 
-            profile.enabledSubjects && profile.enabledSubjects.includes(subjectId)
+        // enabledSubjects chega populado (documentos Subject); `includes` com o id
+        // em string nunca casava. Compara sempre pelo id normalizado.
+        const targetId = String(subjectId?._id || subjectId || '');
+        const isEnabled = teacher.staffProfiles.some(profile =>
+            Array.isArray(profile.enabledSubjects) &&
+            profile.enabledSubjects.some(subject => String(subject?._id || subject || '') === targetId)
         );
 
         if (!isEnabled) {
