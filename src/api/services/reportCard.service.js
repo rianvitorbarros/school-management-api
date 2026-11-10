@@ -375,19 +375,45 @@ class ReportCardService {
     });
   }
 
+  _subjectEntryHasData(item = {}) {
+    const hasValue = (value) => value !== null && value !== undefined && value !== '';
+    return (
+      hasValue(item.score) ||
+      hasValue(item.testScore) ||
+      hasValue(item.activityScore) ||
+      hasValue(item.participationScore) ||
+      String(item.observation || '').trim() !== '' ||
+      (Array.isArray(item.scoreHistory) && item.scoreHistory.length > 0)
+    );
+  }
+
   _mergeSubjects(existingSubjects = [], generatedSubjects = [], minimumAverage = 7) {
     const existingMap = new Map();
+    const consumed = new Set();
 
     for (const item of existingSubjects) {
-      const key = `${String(item.subjectId)}::${String(item.teacherId)}`;
+      const key = `${String(extractId(item.subjectId))}::${String(extractId(item.teacherId))}`;
       existingMap.set(key, item);
     }
 
-    return generatedSubjects.map((generated) => {
-      const key = `${String(generated.subjectId)}::${String(generated.teacherId)}`;
-      const existing = existingMap.get(key);
+    const findBySubjectOnly = (subjectId) => {
+      const candidates = existingSubjects.filter(
+        (item) =>
+          !consumed.has(item) &&
+          String(extractId(item.subjectId)) === String(extractId(subjectId))
+      );
+      return candidates.length === 1 ? candidates[0] : null;
+    };
+
+    const merged = generatedSubjects.map((generated) => {
+      const key = `${String(extractId(generated.subjectId))}::${String(extractId(generated.teacherId))}`;
+      let existing = existingMap.get(key);
+      if (existing && consumed.has(existing)) existing = null;
+      // Troca de professor no horario nao pode descartar as notas ja lancadas.
+      if (!existing) existing = findBySubjectOnly(generated.subjectId);
 
       if (!existing) return generated;
+      consumed.add(existing);
 
       const mergedScore =
         existing.score !== null && existing.score !== undefined
@@ -418,6 +444,15 @@ class ReportCardService {
         scoreHistory: existing.scoreHistory || [],
       };
     });
+
+    // Disciplinas que sairam do horario do bimestre (ou foram incluidas
+    // manualmente) continuam no boletim quando ja possuem lancamentos.
+    for (const item of existingSubjects) {
+      if (consumed.has(item) || !this._subjectEntryHasData(item)) continue;
+      merged.push(typeof item.toObject === 'function' ? item.toObject() : item);
+    }
+
+    return merged;
   }
 
   _mergeDevelopmentalAssessments(existingAssessments = [], generatedSubjects = []) {
@@ -762,6 +797,167 @@ class ReportCardService {
 
   async ensureReportCardsForClassTerm(payload) {
     return this.generateClassReportCards(payload);
+  }
+
+  async _resolveSubjectTeacher({ schoolId, classId, subjectId, termId }) {
+    const horarios = await Horario.find({
+      school_id: schoolId,
+      classId,
+      subjectId,
+    }).populate('teacherId');
+
+    const list = Array.isArray(horarios) ? horarios : [];
+    const preferred =
+      list.find((item) => String(extractId(item.termId)) === String(termId) && item.teacherId) ||
+      list.find((item) => item.teacherId);
+    if (!preferred) return { teacherId: null, teacherNameSnapshot: '' };
+
+    const teacher = preferred.teacherId;
+    return {
+      teacherId: extractId(teacher) || null,
+      teacherNameSnapshot:
+        teacher?.name || teacher?.fullName || teacher?.full_name || '',
+    };
+  }
+
+  /**
+   * Garante que a disciplina exista no boletim do aluno naquele bimestre,
+   * para que a coordenacao consiga lancar notas mesmo quando a disciplina nao
+   * constava no horario usado na geracao do boletim (ex.: aluno remanejado de
+   * turma, horario do bimestre incompleto). Nunca altera notas existentes.
+   */
+  async ensureStudentTermSubject({
+    schoolId,
+    studentId,
+    termId,
+    schoolYear,
+    subjectId,
+    actor,
+  }) {
+    if (!schoolId || !studentId || !termId || !schoolYear || !subjectId) {
+      throw this._createError(
+        'schoolId, studentId, termId, schoolYear e subjectId sao obrigatorios.',
+        400
+      );
+    }
+    if (!mongoose.Types.ObjectId.isValid(String(subjectId))) {
+      throw this._createError('Disciplina invalida.', 400);
+    }
+
+    const parsedSchoolYear = Number(schoolYear);
+    const permissionProbe = canEditReportCardSubject({
+      actor,
+      reportCard: { school_id: schoolId },
+      subjectItem: {},
+    });
+    if (!permissionProbe.allowed || permissionProbe.reason !== 'privileged_reviewer') {
+      throw this._createError(
+        'Somente coordenacao ou administracao podem incluir disciplinas no boletim.',
+        403
+      );
+    }
+
+    const subject = await Subject.findOne({ _id: subjectId, school_id: schoolId });
+    if (!subject) {
+      throw this._createError('Disciplina nao encontrada nesta escola.', 404);
+    }
+
+    const reportCards = await ReportCard.find({
+      school_id: schoolId,
+      studentId,
+      termId,
+      schoolYear: parsedSchoolYear,
+    }).sort({ createdAt: 1 });
+
+    const sameSubject = (item) =>
+      String(extractId(item.subjectId)) === String(subjectId);
+
+    for (const card of reportCards || []) {
+      const entry = (card.subjects || []).find(sameSubject);
+      if (entry) return { reportCard: card, subject: entry, created: false };
+    }
+
+    const activeEnrollment = await Enrollment.findOne({
+      school_id: schoolId,
+      student: studentId,
+      academicYear: parsedSchoolYear,
+      status: 'Ativa',
+    });
+    const activeClassId = extractId(activeEnrollment?.class);
+
+    // Prefere o boletim ja existente no bimestre (turma em que o aluno estava),
+    // priorizando a turma da matricula ativa quando houver mais de um.
+    let reportCard =
+      (reportCards || []).find(
+        (card) => activeClassId && String(extractId(card.classId)) === activeClassId
+      ) ||
+      (reportCards || [])[(reportCards || []).length - 1] ||
+      null;
+
+    if (!reportCard) {
+      if (!activeEnrollment || !activeClassId) {
+        throw this._createError(
+          'O aluno nao possui matricula ativa neste ano letivo para gerar o boletim do bimestre.',
+          404
+        );
+      }
+      const [school, classData, student] = await Promise.all([
+        School.findOne({ _id: schoolId }),
+        ClassModel.findOne({ _id: activeClassId, school_id: schoolId }),
+        Student.findOne({ _id: studentId, school_id: schoolId }),
+      ]);
+      if (!classData) {
+        throw this._createError('Turma da matricula ativa nao encontrada.', 404);
+      }
+      if (evaluationModeForClass(classData) === 'developmental') {
+        throw this._createError(
+          'Esta turma usa avaliacao descritiva. Gere os boletins pela turma.',
+          400
+        );
+      }
+      reportCard = new ReportCard({
+        school_id: schoolId,
+        schoolYear: parsedSchoolYear,
+        termId,
+        classId: activeClassId,
+        studentId,
+        enrollmentId: activeEnrollment._id,
+        gradingType: 'numeric',
+        evaluationMode: 'numeric',
+        minimumAverage: this._normalizeMinimumAverage(school),
+        status: 'Rascunho',
+        responsibleNameSnapshot: student ? this._extractResponsibleName(student) || '' : '',
+        subjects: [],
+        developmentalAssessments: [],
+      });
+    }
+
+    const teacher = await this._resolveSubjectTeacher({
+      schoolId,
+      classId: extractId(reportCard.classId),
+      subjectId,
+      termId,
+    });
+
+    reportCard.subjects.push({
+      subjectId: subject._id,
+      subjectNameSnapshot: subject.name || 'Disciplina',
+      teacherId: teacher.teacherId,
+      teacherNameSnapshot: teacher.teacherNameSnapshot,
+      testScore: null,
+      activityScore: null,
+      participationScore: null,
+      score: null,
+      status: 'Pendente',
+      observation: '',
+      filledBy: null,
+      filledAt: null,
+    });
+    reportCard.status = this._calculateReportCardStatus(reportCard);
+    await reportCard.save();
+
+    const entry = reportCard.subjects.find(sameSubject);
+    return { reportCard, subject: entry, created: true };
   }
 
   async getStudentReportCard({

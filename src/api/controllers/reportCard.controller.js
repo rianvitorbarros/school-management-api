@@ -100,6 +100,51 @@ class ReportCardController {
     }
   }
 
+  async ensureStudentTermSubject(req, res, next) {
+    try {
+      const schoolId =
+        req.user?.school_id ||
+        req.user?.schoolId;
+
+      const { studentId, termId, schoolYear, subjectId } = req.body || {};
+
+      const result = await reportCardService.ensureStudentTermSubject({
+        schoolId,
+        studentId,
+        termId,
+        schoolYear,
+        subjectId,
+        actor: req.user,
+      });
+
+      const subject = result.subject || {};
+      const teacherId = subject.teacherId?._id || subject.teacherId || '';
+      return res.status(result.created ? 201 : 200).json({
+        success: true,
+        message: result.created
+          ? 'Disciplina incluida no boletim do bimestre.'
+          : 'Disciplina ja existente no boletim do bimestre.',
+        data: {
+          created: result.created,
+          reportCardId: String(result.reportCard._id),
+          classId: String(result.reportCard.classId?._id || result.reportCard.classId),
+          termId: String(result.reportCard.termId?._id || result.reportCard.termId),
+          schoolYear: result.reportCard.schoolYear,
+          subjectId: String(subject.subjectId?._id || subject.subjectId || ''),
+          teacherId: teacherId ? String(teacherId) : '',
+          teacherName: subject.teacherNameSnapshot || '',
+        },
+      });
+    } catch (error) {
+      console.error('[ReportCardController.ensureStudentTermSubject] Erro:', error);
+      return res.status(error.statusCode || 500).json({
+        success: false,
+        message: error.message || 'Erro interno ao preparar o boletim do bimestre.',
+        details: error.toString()
+      });
+    }
+  }
+
   async getReportCardById(req, res, next) {
     try {
       const schoolId =
