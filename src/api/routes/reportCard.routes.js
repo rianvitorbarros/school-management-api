@@ -26,6 +26,13 @@ router.get(
   reportCardController.getStudentHistory
 );
 
+// Coordenacao: garante a disciplina no boletim do aluno em um bimestre
+router.post(
+  '/student-term-subject',
+  verifyToken,
+  reportCardController.ensureStudentTermSubject
+);
+
 // Provas corrigidas disponiveis para importar no boletim
 router.get(
   '/import/exams',
