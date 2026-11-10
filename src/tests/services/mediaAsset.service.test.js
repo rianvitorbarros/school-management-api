@@ -80,9 +80,14 @@ function createHarness({ dailyAiLimit = 10, generate } = {}) {
   const imageClient = {
     IMAGE_STYLES: iaraImageClient.IMAGE_STYLES,
     buildPrompt: iaraImageClient.buildPrompt,
-    async generateImage({ prompt }) {
+    buildReferencePrompt: iaraImageClient.buildReferencePrompt,
+    closestAspectRatio: iaraImageClient.closestAspectRatio,
+    normalizeBackground: iaraImageClient.normalizeBackground,
+    async generateImage({ prompt, extraParts, aspectRatio }) {
       state.generateCalls += 1;
       state.lastPrompt = prompt;
+      state.lastExtraParts = extraParts;
+      state.lastAspectRatio = aspectRatio;
       if (generate) return generate(state.generateCalls);
       return { buffer: PNG_BYTES, mimeType: 'image/png', model: 'fake-image-model' };
     },
@@ -91,6 +96,10 @@ function createHarness({ dailyAiLimit = 10, generate } = {}) {
   const imageProcessor = {
     async inspect() { return { width: 100, height: 80 }; },
     async thumbnail() { return PNG_BYTES; },
+    async prepareReference(buffer) {
+      state.preparedReference = buffer;
+      return { buffer: Buffer.from('jpeg-reduzido'), mimeType: 'image/jpeg', width: 1240, height: 1754 };
+    },
     async toPng(buffer, options) {
       state.lastToPngOptions = options;
       return { buffer: PNG_BYTES, width: 1024, height: 1024 };
@@ -237,10 +246,120 @@ test('generateWithAi salva as imagens no acervo da escola com o pedido e o estil
   assert.equal(found.items.length, 2);
 });
 
-test('generateWithAi colorido mantem o fundo branco', async () => {
+test('generateWithAi colorido: sem fundo por padrao e com cenario quando pedido', async () => {
   const { service, state, teacher } = createHarness();
-  await service.generateWithAi(teacher, { prompt: 'uma maçã', style: 'color', count: 1 });
+  await service.generateWithAi(teacher, { prompt: 'uma criança no computador', style: 'color', count: 1 });
+  assert.equal(state.lastToPngOptions.removeBackground, true, 'remove o branco das bordas');
+  assert.equal(state.lastToPngOptions.transparentWhite, false, 'preserva o branco dentro do desenho');
+  assert.match(state.lastPrompt, /no scenery/);
+
+  await service.generateWithAi(teacher, {
+    prompt: 'uma criança no computador', style: 'color', count: 1, background: 'scene',
+  });
+  assert.equal(state.lastToPngOptions.transparentWhite, false, 'o cenário fica');
+  assert.equal(state.lastToPngOptions.removeFrame, true, 'só a moldura branca sai');
+  assert.equal(state.lastToPngOptions.removeBackground, undefined);
+  assert.equal(state.lastToPngOptions.trim, true, 'margem branca em volta sai');
+  assert.match(state.lastPrompt, /background scene/);
+
+  // App antigo (transparentBackground=false) continua mantendo o fundo.
+  await service.generateWithAi(teacher, {
+    prompt: 'uma maçã', style: 'color', count: 1, transparentBackground: false,
+  });
   assert.equal(state.lastToPngOptions.transparentWhite, false);
+  assert.equal(state.lastToPngOptions.removeBackground, undefined);
+});
+
+test('generateFromReference recria o desenho sem cabecalho e com o pedido do professor', async () => {
+  const { service, state, teacher } = createHarness();
+  const result = await service.generateFromReference(
+    teacher,
+    { buffer: PNG_BYTES, originalname: 'whatsapp.png' },
+    { instructions: 'troque a bola por uma pipa', style: 'lineart', count: '2' }
+  );
+  assert.equal(result.items.length, 2);
+  assert.equal(state.generateCalls, 2);
+  assert.equal(result.items[0].source, 'ai-from-reference');
+  assert.equal(result.items[0].title, 'troque a bola por uma pipa');
+  // A referência reduzida vai junto do pedido.
+  assert.equal(state.lastExtraParts[0].inlineData.mimeType, 'image/jpeg');
+  assert.equal(state.lastExtraParts[0].inlineData.data, Buffer.from('jpeg-reduzido').toString('base64'));
+  assert.equal(state.lastAspectRatio, '2:3', 'segue a proporção da folha de referência');
+  assert.match(state.lastPrompt, /headings/);
+  assert.match(state.lastPrompt, /"Name:" lines/);
+  assert.match(state.lastPrompt, /QR code\) is added later by our own system/);
+  assert.match(state.lastPrompt, /troque a bola por uma pipa/);
+  assert.match(state.lastPrompt, /coloring page/);
+  assert.equal(state.lastToPngOptions.transparentWhite, true);
+
+  // Conta no limite diário da escola.
+  const quota = await service.getAiQuota(teacher);
+  assert.equal(quota.used, 2);
+
+  // Sem pedido extra também funciona.
+  const plain = await service.generateFromReference(
+    teacher, { buffer: PNG_BYTES }, { style: 'color', count: 1, background: 'scene' }
+  );
+  assert.equal(plain.items[0].title, 'Desenho a partir de referencia');
+  assert.doesNotMatch(state.lastPrompt, /Changes requested/);
+  assert.match(state.lastPrompt, /Keep the background scene/);
+});
+
+test('generateFromReference recusa arquivo ausente ou que nao e imagem', async () => {
+  const { service, teacher } = createHarness();
+  await assert.rejects(
+    () => service.generateFromReference(teacher, null, {}),
+    (error) => error.code === 'IARA_REFERENCE_REQUIRED'
+  );
+  await assert.rejects(
+    () => service.generateFromReference(teacher, { buffer: Buffer.from('%PDF-1.4') }, {}),
+    (error) => error.code === 'IARA_REFERENCE_INVALID_TYPE'
+  );
+});
+
+test('processador real: sem fundo remove so o branco das bordas e preserva o branco do desenho', async () => {
+  const { createCanvas, loadImage } = require('@napi-rs/canvas');
+  const canvas = createCanvas(60, 60);
+  const context = canvas.getContext('2d');
+  context.fillStyle = '#fdfdfb';
+  context.fillRect(0, 0, 60, 60);
+  context.fillStyle = '#e53935';
+  context.fillRect(10, 10, 40, 40);
+  context.fillStyle = '#ffffff';
+  context.fillRect(25, 25, 10, 10); // "olho" branco dentro do desenho
+  const result = await defaultImageProcessor.toPng(canvas.toBuffer('image/png'), { removeBackground: true });
+  const image = await loadImage(result.buffer);
+  const check = createCanvas(60, 60).getContext('2d');
+  check.drawImage(image, 0, 0);
+  assert.equal(check.getImageData(2, 2, 1, 1).data[3], 0, 'fundo some');
+  assert.equal(check.getImageData(15, 15, 1, 1).data[3], 255, 'cor fica');
+  assert.equal(check.getImageData(30, 30, 1, 1).data[3], 255, 'branco de dentro fica');
+
+  // Recorte: margens vazias saem (fica o quadrado de 40 px + margem).
+  const trimmed = await defaultImageProcessor.toPng(canvas.toBuffer('image/png'), { removeBackground: true, trim: true });
+  assert.ok(trimmed.width < 50 && trimmed.width >= 40, `largura recortada: ${trimmed.width}`);
+
+  // Cena que vai até a borda: nada é removido nem recortado.
+  const scene = createCanvas(60, 60);
+  const sceneContext = scene.getContext('2d');
+  sceneContext.fillStyle = '#87ceeb';
+  sceneContext.fillRect(0, 0, 60, 60);
+  sceneContext.fillStyle = '#ffffff';
+  sceneContext.fillRect(0, 0, 15, 8); // nuvem branca encostando na borda
+  const sceneResult = await defaultImageProcessor.toPng(scene.toBuffer('image/png'), { removeFrame: true, trim: true });
+  assert.equal(sceneResult.width, 60);
+  const sceneImage = await loadImage(sceneResult.buffer);
+  const sceneCheck = createCanvas(60, 60).getContext('2d');
+  sceneCheck.drawImage(sceneImage, 0, 0);
+  assert.equal(sceneCheck.getImageData(2, 2, 1, 1).data[3], 255, 'nuvem continua');
+
+  // Cena dentro de um "cartão" branco: a moldura sai e a imagem é recortada.
+  const framed = await defaultImageProcessor.toPng(canvas.toBuffer('image/png'), { removeFrame: true, trim: true });
+  assert.ok(framed.width < 50);
+
+  const reference = await defaultImageProcessor.prepareReference(canvas.toBuffer('image/png'), 30);
+  assert.equal(reference.mimeType, 'image/jpeg');
+  assert.equal(reference.width, 30);
 });
 
 test('generateWithAi respeita o limite diario da escola', async () => {

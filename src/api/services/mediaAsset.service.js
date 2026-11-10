@@ -95,6 +95,112 @@ function tagsFromPrompt(prompt) {
   )].slice(0, 8);
 }
 
+/**
+ * Remove o fundo claro que encosta nas bordas da imagem (preenchimento a
+ * partir das bordas). Diferente de apagar todo o branco, preserva o branco
+ * DENTRO do desenho (olhos, reflexos, camisetas brancas).
+ */
+function isLightPixel(pixels, pixel) {
+  const index = pixel * 4;
+  const r = pixels[index];
+  const g = pixels[index + 1];
+  const b = pixels[index + 2];
+  const min = Math.min(r, g, b);
+  return min >= 225 && Math.max(r, g, b) - min <= 28;
+}
+
+/** Fracao da borda da imagem que e branca/clara (1 = moldura toda branca). */
+function lightBorderRatio(pixels, width, height) {
+  let light = 0;
+  let total = 0;
+  const check = (pixel) => {
+    total += 1;
+    if (isLightPixel(pixels, pixel)) light += 1;
+  };
+  for (let x = 0; x < width; x += 1) {
+    check(x);
+    check((height - 1) * width + x);
+  }
+  for (let y = 1; y < height - 1; y += 1) {
+    check(y * width);
+    check(y * width + width - 1);
+  }
+  return total ? light / total : 0;
+}
+
+function removeEdgeBackground(pixels, width, height) {
+  const total = width * height;
+  const isBackground = (pixel) => isLightPixel(pixels, pixel);
+  const marked = new Uint8Array(total);
+  const stack = new Int32Array(total);
+  let top = 0;
+  const push = (pixel) => {
+    if (marked[pixel] || !isBackground(pixel)) return;
+    marked[pixel] = 1;
+    stack[top++] = pixel;
+  };
+  for (let x = 0; x < width; x += 1) {
+    push(x);
+    push((height - 1) * width + x);
+  }
+  for (let y = 0; y < height; y += 1) {
+    push(y * width);
+    push(y * width + width - 1);
+  }
+  while (top > 0) {
+    const pixel = stack[--top];
+    const x = pixel % width;
+    if (x > 0) push(pixel - 1);
+    if (x < width - 1) push(pixel + 1);
+    if (pixel >= width) push(pixel - width);
+    if (pixel < total - width) push(pixel + width);
+  }
+  for (let pixel = 0; pixel < total; pixel += 1) {
+    const index = pixel * 4;
+    if (marked[pixel]) {
+      pixels[index + 3] = 0;
+      continue;
+    }
+    // Borda suave: pixel claro encostado no fundo removido.
+    const x = pixel % width;
+    const touches = (x > 0 && marked[pixel - 1]) || (x < width - 1 && marked[pixel + 1])
+      || (pixel >= width && marked[pixel - width]) || (pixel < total - width && marked[pixel + width]);
+    if (!touches) continue;
+    const lightness = Math.min(pixels[index], pixels[index + 1], pixels[index + 2]);
+    if (lightness >= 200) {
+      pixels[index + 3] = Math.round(pixels[index + 3] * Math.max(0, (255 - lightness) / 55));
+    }
+  }
+}
+
+/**
+ * Retangulo que contem os pixels visiveis (alpha > 8), com uma pequena
+ * margem. Null se a imagem ficou toda transparente.
+ */
+function visibleBounds(pixels, width, height, paddingRatio = 0.02) {
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (pixels[(y * width + x) * 4 + 3] > 8) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < 0) return null;
+  const pad = Math.round(Math.max(width, height) * paddingRatio);
+  const left = Math.max(0, minX - pad);
+  const top = Math.max(0, minY - pad);
+  const right = Math.min(width - 1, maxX + pad);
+  const bottom = Math.min(height - 1, maxY + pad);
+  return { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
+}
+
 function startOfToday(now) {
   const date = new Date(now);
   date.setHours(0, 0, 0, 0);
@@ -129,7 +235,28 @@ const defaultImageProcessor = {
    * Converte para PNG, limita o tamanho e (opcionalmente) troca o fundo
    * branco por transparente, para o desenho poder ficar por cima de formas.
    */
-  async toPng(buffer, { transparentWhite = false } = {}) {
+  /** Reduz a imagem de referencia antes de enviar ao modelo (menos custo). */
+  async prepareReference(buffer, maxDimension = 1536) {
+    // eslint-disable-next-line global-require
+    const { createCanvas, loadImage } = require('@napi-rs/canvas');
+    const image = await loadImage(buffer);
+    const scale = Math.min(1, maxDimension / Math.max(image.width, image.height));
+    const width = Math.max(1, Math.round(image.width * scale));
+    const height = Math.max(1, Math.round(image.height * scale));
+    const canvas = createCanvas(width, height);
+    const context = canvas.getContext('2d');
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, width, height);
+    context.drawImage(image, 0, 0, width, height);
+    return { buffer: canvas.toBuffer('image/jpeg', 90), mimeType: 'image/jpeg', width, height };
+  },
+
+  async toPng(buffer, {
+    transparentWhite = false,
+    removeBackground = false,
+    removeFrame = false,
+    trim = false,
+  } = {}) {
     // eslint-disable-next-line global-require
     const { createCanvas, loadImage } = require('@napi-rs/canvas');
     const image = await loadImage(buffer);
@@ -139,6 +266,7 @@ const defaultImageProcessor = {
     const canvas = createCanvas(width, height);
     const context = canvas.getContext('2d');
     context.drawImage(image, 0, 0, width, height);
+    let cleared = false;
     if (transparentWhite) {
       const data = context.getImageData(0, 0, width, height);
       const pixels = data.data;
@@ -152,6 +280,28 @@ const defaultImageProcessor = {
         }
       }
       context.putImageData(data, 0, 0);
+    } else if (removeBackground || removeFrame) {
+      const data = context.getImageData(0, 0, width, height);
+      // Cena com fundo: so remove o branco se ele contorna quase toda a
+      // borda (moldura ou "cartao"); nuvens claras tocando a borda ficam.
+      cleared = removeBackground || lightBorderRatio(data.data, width, height) >= 0.9;
+      if (cleared) {
+        removeEdgeBackground(data.data, width, height);
+        context.putImageData(data, 0, 0);
+      }
+    }
+    if (trim && (transparentWhite || cleared)) {
+      // Corta as margens vazias (ex.: o espaco do cabecalho removido ou a
+      // moldura branca em volta de uma cena).
+      const data = context.getImageData(0, 0, width, height);
+      const bounds = visibleBounds(data.data, width, height);
+      if (bounds && (bounds.width < width || bounds.height < height)) {
+        const cropped = createCanvas(bounds.width, bounds.height);
+        cropped.getContext('2d').drawImage(
+          canvas, bounds.x, bounds.y, bounds.width, bounds.height, 0, 0, bounds.width, bounds.height
+        );
+        return { buffer: cropped.toBuffer('image/png'), width: bounds.width, height: bounds.height };
+      }
     }
     return { buffer: canvas.toBuffer('image/png'), width, height };
   },
@@ -435,20 +585,49 @@ class MediaAssetService {
     };
   }
 
-  async generateWithAi(actor, payload = {}) {
-    const context = this.resolveContext(actor);
-    const subject = normalizeText(payload.prompt).replace(/\s+/g, ' ');
-    if (subject.length < PROMPT_MIN) {
-      throw createHttpError('Descreva a imagem que voce quer (ex.: "um elefante feliz").', 400, 'IARA_IMAGE_PROMPT_REQUIRED');
-    }
-    if (subject.length > PROMPT_MAX) {
-      throw createHttpError(`Descricao muito longa (maximo ${PROMPT_MAX} caracteres).`, 400, 'IARA_IMAGE_PROMPT_TOO_LONG');
-    }
-    const style = Object.prototype.hasOwnProperty.call(this.imageClient.IMAGE_STYLES, payload.style)
+  _resolveStyle(payload) {
+    return Object.prototype.hasOwnProperty.call(this.imageClient.IMAGE_STYLES, payload.style)
       ? payload.style
       : 'lineart';
-    const count = Math.min(MAX_AI_IMAGES_PER_REQUEST, Math.max(1, Number.parseInt(payload.count, 10) || 2));
+  }
 
+  /**
+   * Como tratar o fundo da imagem gerada:
+   * - para colorir: todo o branco vira transparente (o papel ja e branco);
+   * - icone: idem;
+   * - colorido: "sem fundo" remove o branco que encosta nas bordas
+   *   (preserva o branco dentro do desenho); "com fundo" mantem tudo.
+   * `transparentBackground` (versoes antigas do app) continua aceito.
+   */
+  _resolveBackground(style, payload) {
+    if (payload.transparentBackground !== undefined && payload.background === undefined) {
+      const transparent = payload.transparentBackground === true || payload.transparentBackground === 'true';
+      return {
+        background: transparent ? 'transparent' : 'scene',
+        processing: transparent ? { transparentWhite: true } : { transparentWhite: false },
+      };
+    }
+    if (style !== 'color') {
+      return { background: 'transparent', processing: { transparentWhite: true, trim: true } };
+    }
+    const background = this.imageClient.normalizeBackground
+      ? this.imageClient.normalizeBackground(payload.background)
+      : (payload.background === 'scene' ? 'scene' : 'transparent');
+    // Com cenario, uma moldura/cartao branco que o modelo as vezes desenha
+    // em volta da cena sai e a imagem e recortada.
+    return {
+      background,
+      processing: background === 'scene'
+        ? { transparentWhite: false, removeFrame: true, trim: true }
+        : { transparentWhite: false, removeBackground: true, trim: true },
+    };
+  }
+
+  _resolveCount(payload) {
+    return Math.min(MAX_AI_IMAGES_PER_REQUEST, Math.max(1, Number.parseInt(payload.count, 10) || 2));
+  }
+
+  async _ensureAiQuota(actor, count) {
     const quota = await this.getAiQuota(actor);
     if (quota.remaining < count) {
       throw createHttpError(
@@ -459,14 +638,13 @@ class MediaAssetService {
         'IARA_IMAGE_DAILY_LIMIT'
       );
     }
+    return quota;
+  }
 
-    const prompt = this.imageClient.buildPrompt(subject, style);
-    const transparentWhite = payload.transparentBackground !== undefined
-      ? payload.transparentBackground === true || payload.transparentBackground === 'true'
-      : style !== 'color';
-
+  /** Gera `count` imagens com o mesmo pedido e guarda as que deram certo. */
+  async _generateAndStore({ context, quota, count, request, processing, fields }) {
     const results = await Promise.allSettled(
-      Array.from({ length: count }, () => this.imageClient.generateImage({ prompt }))
+      Array.from({ length: count }, () => this.imageClient.generateImage(request))
     );
 
     const items = [];
@@ -476,19 +654,13 @@ class MediaAssetService {
         firstError = firstError || result.reason;
         continue;
       }
-      const png = await this.imageProcessor.toPng(result.value.buffer, { transparentWhite });
+      const png = await this.imageProcessor.toPng(result.value.buffer, processing);
       const asset = await this.storeImage({
         context,
         buffer: png.buffer,
         contentType: 'image/png',
         fields: {
-          visibility: 'school',
-          kind: this.imageClient.IMAGE_STYLES[style].kind,
-          source: 'ai-generated',
-          title: subject.slice(0, 120),
-          tags: tagsFromPrompt(subject),
-          prompt: subject,
-          style,
+          ...fields,
           model: result.value.model || '',
           attribution: 'Gerada pela Iara (AcademyHub)',
           width: png.width,
@@ -507,6 +679,97 @@ class MediaAssetService {
       failed: count - items.length,
       remainingToday: Math.max(0, quota.remaining - items.length),
     };
+  }
+
+  async generateWithAi(actor, payload = {}) {
+    const context = this.resolveContext(actor);
+    const subject = normalizeText(payload.prompt).replace(/\s+/g, ' ');
+    if (subject.length < PROMPT_MIN) {
+      throw createHttpError('Descreva a imagem que voce quer (ex.: "um elefante feliz").', 400, 'IARA_IMAGE_PROMPT_REQUIRED');
+    }
+    if (subject.length > PROMPT_MAX) {
+      throw createHttpError(`Descricao muito longa (maximo ${PROMPT_MAX} caracteres).`, 400, 'IARA_IMAGE_PROMPT_TOO_LONG');
+    }
+    const style = this._resolveStyle(payload);
+    const count = this._resolveCount(payload);
+    const quota = await this._ensureAiQuota(actor, count);
+    const { background, processing } = this._resolveBackground(style, payload);
+
+    return this._generateAndStore({
+      context,
+      quota,
+      count,
+      request: { prompt: this.imageClient.buildPrompt(subject, style, { background }) },
+      processing,
+      fields: {
+        visibility: 'school',
+        kind: this.imageClient.IMAGE_STYLES[style].kind,
+        source: 'ai-generated',
+        title: subject.slice(0, 120),
+        tags: tagsFromPrompt(subject),
+        prompt: subject,
+        style,
+      },
+    });
+  }
+
+  /**
+   * Recria o desenho de uma imagem de referencia (print de livro, foto ou
+   * PDF de atividade), sem textos nem cabecalho, com ajustes opcionais
+   * pedidos pelo professor. A referencia nao e guardada.
+   */
+  async generateFromReference(actor, file, payload = {}) {
+    const context = this.resolveContext(actor);
+    if (!file || !Buffer.isBuffer(file.buffer) || file.buffer.length === 0) {
+      throw createHttpError('Envie a imagem de referencia.', 400, 'IARA_REFERENCE_REQUIRED');
+    }
+    if (file.buffer.length > MAX_UPLOAD_BYTES) {
+      throw createHttpError('Imagem acima de 8 MB.', 413, 'IARA_REFERENCE_TOO_LARGE');
+    }
+    const contentType = detectImageContentType(file.buffer);
+    if (!UPLOAD_CONTENT_TYPES.includes(contentType)) {
+      throw createHttpError('Formato nao suportado. Use PNG, JPG ou WEBP.', 400, 'IARA_REFERENCE_INVALID_TYPE');
+    }
+    const instructions = normalizeText(payload.instructions || payload.prompt).replace(/\s+/g, ' ');
+    if (instructions.length > PROMPT_MAX) {
+      throw createHttpError(`Pedido muito longo (maximo ${PROMPT_MAX} caracteres).`, 400, 'IARA_IMAGE_PROMPT_TOO_LONG');
+    }
+    const style = this._resolveStyle(payload);
+    const count = this._resolveCount(payload);
+    const quota = await this._ensureAiQuota(actor, count);
+    const { background, processing } = this._resolveBackground(style, payload);
+
+    let reference;
+    try {
+      reference = await this.imageProcessor.prepareReference(file.buffer);
+    } catch (error) {
+      throw createHttpError('Nao foi possivel ler a imagem de referencia.', 400, 'IARA_REFERENCE_INVALID');
+    }
+    const aspectRatio = style === 'icon'
+      ? '1:1'
+      : this.imageClient.closestAspectRatio(reference.width, reference.height);
+    const title = instructions || 'Desenho a partir de referencia';
+
+    return this._generateAndStore({
+      context,
+      quota,
+      count,
+      request: {
+        prompt: this.imageClient.buildReferencePrompt({ instructions, style, background }),
+        extraParts: [{ inlineData: { mimeType: reference.mimeType, data: reference.buffer.toString('base64') } }],
+        aspectRatio,
+      },
+      processing,
+      fields: {
+        visibility: 'school',
+        kind: this.imageClient.IMAGE_STYLES[style].kind,
+        source: 'ai-from-reference',
+        title: title.slice(0, 120),
+        tags: tagsFromPrompt(instructions),
+        prompt: instructions,
+        style,
+      },
+    });
   }
 
   // ------------------------------------------------------------ curadoria
@@ -571,3 +834,4 @@ module.exports.MediaAssetService = MediaAssetService;
 module.exports.tagsFromPrompt = tagsFromPrompt;
 module.exports.normalizeTags = normalizeTags;
 module.exports.defaultImageProcessor = defaultImageProcessor;
+module.exports.removeEdgeBackground = removeEdgeBackground;
