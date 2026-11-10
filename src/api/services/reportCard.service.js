@@ -1027,6 +1027,7 @@ class ReportCardService {
     participationScore,
     observation,
     reason,
+    clearScore = false,
     expectedContext = {},
   }) {
     if (!schoolId || !reportCardId || !subjectId || !getActorId(actor)) {
@@ -1084,6 +1085,15 @@ class ReportCardService {
 
     const subjectEntry = reportCard.subjects[subjectIndex];
     this._assertCanEditSubject({ actor, reportCard, subjectEntry });
+
+    if (clearScore === true || clearScore === 'true') {
+      return this._clearSubjectScore({
+        reportCard,
+        subjectIndex,
+        actor,
+        reason: String(reason || observation || '').trim(),
+      });
+    }
 
     const editingComponents =
       testScore !== undefined ||
@@ -1159,6 +1169,40 @@ class ReportCardService {
 
     await reportCard.save();
 
+    return reportCard;
+  }
+
+  async _clearSubjectScore({ reportCard, subjectIndex, actor, reason }) {
+    const entry = reportCard.subjects[subjectIndex];
+    const previousSnapshot = this._scoreSnapshot(entry);
+    const alreadyEmpty =
+      previousSnapshot.score === null &&
+      previousSnapshot.testScore === null &&
+      previousSnapshot.activityScore === null &&
+      previousSnapshot.participationScore === null;
+    if (alreadyEmpty) return reportCard;
+
+    entry.testScore = null;
+    entry.testScoreSource = null;
+    entry.activityScore = null;
+    entry.participationScore = null;
+    entry.score = null;
+    const changedAt = new Date();
+    this._applyManualEditMetadata(entry, actor, changedAt);
+    entry.status = this._calculateSubjectStatus(null, reportCard.minimumAverage);
+    reportCard.status = this._calculateReportCardStatus(reportCard);
+
+    this._appendScoreHistory({
+      subjectEntry: entry,
+      actor,
+      source: 'manual_report_card_edit',
+      reason: reason || 'Nota removida.',
+      previous: previousSnapshot,
+      current: this._scoreSnapshot(entry),
+      changedAt,
+    });
+
+    await reportCard.save();
     return reportCard;
   }
 

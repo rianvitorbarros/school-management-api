@@ -78,3 +78,22 @@ test('salvar uma disciplina não sobrescreve outra no mesmo boletim', async () =
   const card = await save({ activityScore: 5 }, {}, otherSubject);
   assert.deepEqual(card.subjects[1], otherSubject);
 });
+
+test('clearScore remove a nota e os componentes com registro na auditoria', async () => {
+  const card = await save({ clearScore: true, reason: 'Nota de teste' },
+    { testScore: 5, activityScore: 2.5, participationScore: 2.5, score: 10, status: 'Acima da Média' });
+  assert.equal(card.subjects[0].score, null);
+  assert.equal(card.subjects[0].testScore, null);
+  assert.equal(card.subjects[0].activityScore, null);
+  assert.equal(card.subjects[0].participationScore, null);
+  assert.equal(card.subjects[0].status, 'Pendente');
+  assert.equal(card.subjects[0].scoreHistory.length, 1);
+  assert.equal(card.subjects[0].scoreHistory[0].previous.score, 10);
+  assert.equal(card.subjects[0].scoreHistory[0].current.score, null);
+  assert.equal(card.saved, true);
+});
+
+test('clearScore em lançamento já vazio não grava nada', async () => {
+  const card = await save({ clearScore: true });
+  assert.equal(card.saved, undefined);
+});
