@@ -136,9 +136,89 @@ function getTimeoutMs() {
   return Number.isFinite(value) && value > 0 ? value : 90000;
 }
 
-function buildPrompt(subject, style) {
+/**
+ * Fundo das imagens coloridas:
+ * - 'transparent' (padrao): so o desenho, sobre branco liso — o servidor
+ *   remove esse branco depois e a imagem fica sem fundo;
+ * - 'scene': com um cenario simples ocupando a imagem toda.
+ */
+const BACKGROUNDS = ['transparent', 'scene'];
+
+function normalizeBackground(value) {
+  return BACKGROUNDS.includes(value) ? value : 'transparent';
+}
+
+const COLOR_SCENE_PROMPT =
+  'A simple, cute cartoon illustration for preschool children of: {subject}. '
+  + 'Flat bright colors, thick dark outlines, with a simple, soft, colorful background scene that fits the subject '
+  + '(for example sky, grass, a room or a classroom). The scene is full-bleed: it reaches all four edges of the '
+  + 'image, with no rounded corners, no card, no frame, no border and no white margin around it. '
+  + 'No text, no letters, no numbers.';
+
+function buildPrompt(subject, style, { background } = {}) {
+  if (style === 'color' && normalizeBackground(background) === 'scene') {
+    return COLOR_SCENE_PROMPT.replace('{subject}', subject);
+  }
   const definition = IMAGE_STYLES[style] || IMAGE_STYLES.lineart;
-  return definition.prompt.replace('{subject}', subject);
+  const prompt = definition.prompt.replace('{subject}', subject);
+  return style === 'color'
+    ? `${prompt} The subject is isolated: no ground, no scenery, no cast shadow.`
+    : prompt;
+}
+
+/**
+ * Pedido para recriar o desenho de uma imagem de referencia (print de livro,
+ * foto de atividade, PDF escaneado). Tudo que nao e ilustracao sai: o
+ * cabecalho da folha (escola, aluno, QR) e colocado pelo proprio AcademyHub.
+ */
+const REFERENCE_STYLE_PROMPTS = {
+  lineart:
+    'Render it as a black and white coloring page for young children: very thick, bold, clean, closed black outlines '
+    + '(uniform line width) on a pure white background. No shading, no gray tones, no color fill, no hatching.',
+  color:
+    'Render it as a cute cartoon for preschool children with flat bright colors and thick dark outlines.',
+  icon:
+    'Render only the main object of the reference as a very simple icon: thick black outline, flat simple colors, '
+    + 'pure white background, one object only, centered, filling most of the canvas.',
+};
+
+function buildReferencePrompt({ instructions = '', style = 'lineart', background } = {}) {
+  const parts = [
+    'Use the attached image only as a visual reference. Redraw its illustration as a new, clean drawing for a '
+      + 'preschool worksheet, keeping the same characters, objects, composition and mood.',
+    'Remove everything that is not part of the illustration itself: titles, headings, instructions, any text, '
+      + 'letters or numbers, "Name:" lines and other fields to write on, page borders and frames, logos, school '
+      + 'headers, page numbers, watermarks, scan marks, shadows of the paper and paper texture. Do not add any text. '
+      + 'The worksheet header (school name, student name, QR code) is added later by our own system. '
+      + 'Let the drawing fill the whole image: do not leave empty space where the removed text used to be.',
+    REFERENCE_STYLE_PROMPTS[style] || REFERENCE_STYLE_PROMPTS.lineart,
+  ];
+  if (style === 'color') {
+    parts.push(normalizeBackground(background) === 'scene'
+      ? 'Keep the background scene, in soft flat colors, full-bleed to all four edges of the image '
+        + '(no rounded corners, no card, no frame, no white margin).'
+      : 'Keep only the characters and objects on a plain pure white background: no scenery, no ground, no cast shadow.');
+  }
+  const extra = String(instructions || '').trim();
+  if (extra) {
+    parts.push(`Changes requested by the teacher (follow them, they may be written in Portuguese): ${extra}`);
+  }
+  return parts.join(' ');
+}
+
+/** Proporcoes aceitas pelo modelo de imagem; escolhe a mais proxima. */
+const ASPECT_RATIOS = [
+  ['1:1', 1], ['3:4', 3 / 4], ['4:3', 4 / 3], ['2:3', 2 / 3], ['3:2', 3 / 2], ['9:16', 9 / 16], ['16:9', 16 / 9],
+];
+
+function closestAspectRatio(width, height) {
+  if (!(width > 0) || !(height > 0)) return '1:1';
+  const ratio = width / height;
+  let best = ASPECT_RATIOS[0];
+  for (const candidate of ASPECT_RATIOS) {
+    if (Math.abs(Math.log(candidate[1] / ratio)) < Math.abs(Math.log(best[1] / ratio))) best = candidate;
+  }
+  return best[0];
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -292,6 +372,10 @@ async function generateImage({
 module.exports = {
   generateImage,
   buildPrompt,
+  buildReferencePrompt,
+  closestAspectRatio,
+  normalizeBackground,
+  BACKGROUNDS,
   getImageModelNames,
   IMAGE_STYLES,
   IaraImageError,

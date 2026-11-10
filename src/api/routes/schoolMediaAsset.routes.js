@@ -77,6 +77,13 @@ router.post('/ai/generate', handle(
   201
 ));
 
+// Recria o desenho de uma imagem de referencia (campo multipart `file`).
+router.post('/ai/generate-from-reference', runUpload, handle(
+  (req) => mediaAssetService.generateFromReference(req.user, req.file, req.body || {}),
+  'Erro ao gerar imagem com a Iara.',
+  201
+));
+
 router.post('/', runUpload, handle(
   (req) => mediaAssetService.uploadAsset(req.user, req.file, req.body || {}),
   'Erro ao enviar imagem.',
