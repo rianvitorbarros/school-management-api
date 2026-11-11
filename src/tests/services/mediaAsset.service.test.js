@@ -275,7 +275,7 @@ test('generateFromReference recria o desenho sem cabecalho e com o pedido do pro
   const result = await service.generateFromReference(
     teacher,
     { buffer: PNG_BYTES, originalname: 'whatsapp.png' },
-    { instructions: 'troque a bola por uma pipa', style: 'lineart', count: '2' }
+    { instructions: 'troque a bola por uma pipa', style: 'lineart', count: '2', keepText: 'true' }
   );
   assert.equal(result.items.length, 2);
   assert.equal(state.generateCalls, 2);
@@ -285,9 +285,10 @@ test('generateFromReference recria o desenho sem cabecalho e com o pedido do pro
   assert.equal(state.lastExtraParts[0].inlineData.mimeType, 'image/jpeg');
   assert.equal(state.lastExtraParts[0].inlineData.data, Buffer.from('jpeg-reduzido').toString('base64'));
   assert.equal(state.lastAspectRatio, '2:3', 'segue a proporção da folha de referência');
-  assert.match(state.lastPrompt, /headings/);
+  assert.match(state.lastPrompt, /Keep the activity title/, 'manter o enunciado');
   assert.match(state.lastPrompt, /"Name:" lines/);
   assert.match(state.lastPrompt, /QR code\) is added later by our own system/);
+  assert.equal(state.lastToPngOptions.darkFrame, true, 'moldura escura de foto sai');
   assert.match(state.lastPrompt, /troque a bola por uma pipa/);
   assert.match(state.lastPrompt, /coloring page/);
   assert.equal(state.lastToPngOptions.transparentWhite, true);
@@ -302,6 +303,7 @@ test('generateFromReference recria o desenho sem cabecalho e com o pedido do pro
   );
   assert.equal(plain.items[0].title, 'Desenho a partir de referencia');
   assert.doesNotMatch(state.lastPrompt, /Changes requested/);
+  assert.match(state.lastPrompt, /headings/, 'sem manter: tira títulos e textos');
   assert.match(state.lastPrompt, /Keep the background scene/);
 });
 
@@ -435,6 +437,83 @@ test('iaraImage.generateImage extrai a imagem da resposta do Gemini e tenta de n
   assert.equal(calls, 2);
   assert.equal(result.mimeType, 'image/png');
   assert.ok(result.buffer.equals(PNG_BYTES));
+});
+
+test('iaraImage: resposta sem imagem por motivo que nao e seguranca tenta de novo', async () => {
+  const pngBase64 = PNG_BYTES.toString('base64');
+  let calls = 0;
+  const result = await iaraImageClient.generateImage({
+    prompt: 'x',
+    apiKey: 'k',
+    sleepFn: async () => {},
+    httpClient: {
+      async post() {
+        calls += 1;
+        if (calls === 1) return { data: { candidates: [{ finishReason: 'IMAGE_OTHER', content: { parts: [] } }] } };
+        return { data: { candidates: [{ finishReason: 'STOP', content: { parts: [{ inlineData: { data: pngBase64, mimeType: 'image/png' } }] } }] } };
+      },
+    },
+  });
+  assert.equal(calls, 2);
+  assert.ok(result.buffer.length > 0);
+
+  // Parecida demais com a original o tempo todo: mensagem clara, sem "bloqueio".
+  await assert.rejects(
+    iaraImageClient.generateImage({
+      prompt: 'x',
+      apiKey: 'k',
+      sleepFn: async () => {},
+      httpClient: { async post() { return { data: { candidates: [{ finishReason: 'IMAGE_RECITATION' }] } }; } },
+    }),
+    (error) => error.code === 'IARA_IMAGE_TOO_SIMILAR' && /mudancas/.test(error.message)
+  );
+
+  // Seguranca continua sendo bloqueio direto, sem repetir.
+  let safetyCalls = 0;
+  await assert.rejects(
+    iaraImageClient.generateImage({
+      prompt: 'x',
+      apiKey: 'k',
+      httpClient: { async post() { safetyCalls += 1; return { data: { candidates: [{ finishReason: 'IMAGE_SAFETY' }] } }; } },
+    }),
+    (error) => error.code === 'IARA_IMAGE_BLOCKED'
+  );
+  assert.equal(safetyCalls, 1);
+});
+
+test('referencia: manter o enunciado muda o pedido e o pedido do professor tem prioridade', () => {
+  const keep = iaraImageClient.buildReferencePrompt({ style: 'lineart', keepText: true, instructions: 'mantenha a frase' });
+  assert.match(keep, /Keep the activity title and instructions text/);
+  assert.doesNotMatch(keep, /Do not add any text/);
+  assert.match(keep, /"Name:" lines/);
+  assert.match(keep, /follow the teacher's request/);
+  assert.match(keep, /photo or a scan/);
+
+  const plain = iaraImageClient.buildReferencePrompt({ style: 'lineart' });
+  assert.match(plain, /Do not add any text/);
+});
+
+test('processador real: moldura escura da foto da folha sai e o traco do desenho fica', async () => {
+  const { createCanvas, loadImage } = require('@napi-rs/canvas');
+  const canvas = createCanvas(80, 80);
+  const context = canvas.getContext('2d');
+  context.fillStyle = '#1e1e1e'; // mesa escura em volta da folha
+  context.fillRect(0, 0, 80, 80);
+  context.fillStyle = '#ffffff'; // folha
+  context.fillRect(8, 8, 64, 64);
+  context.fillStyle = '#000000'; // traco do desenho
+  context.fillRect(30, 30, 20, 4);
+  const result = await defaultImageProcessor.toPng(canvas.toBuffer('image/png'), {
+    transparentWhite: true, darkFrame: true, trim: true,
+  });
+  assert.ok(result.width < 40, `recortado em volta do traco: ${result.width}`);
+  const image = await loadImage(result.buffer);
+  const check = createCanvas(result.width, result.height).getContext('2d');
+  check.drawImage(image, 0, 0);
+  let opaque = 0;
+  const data = check.getImageData(0, 0, result.width, result.height).data;
+  for (let i = 3; i < data.length; i += 4) if (data[i] === 255) opaque += 1;
+  assert.ok(opaque >= 70, 'o traco preto continua');
 });
 
 test('iaraImage.generateImage informa bloqueio de conteudo e falta de configuracao', async () => {
