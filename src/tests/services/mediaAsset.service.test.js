@@ -83,6 +83,10 @@ function createHarness({ dailyAiLimit = 10, generate } = {}) {
     buildReferencePrompt: iaraImageClient.buildReferencePrompt,
     closestAspectRatio: iaraImageClient.closestAspectRatio,
     normalizeBackground: iaraImageClient.normalizeBackground,
+    async transcribeReferenceText() {
+      state.transcribeCalls = (state.transcribeCalls || 0) + 1;
+      return 'VAMOS BRINCAR?\n1. Pinte a joaninha de vermelho.';
+    },
     async generateImage({ prompt, extraParts, aspectRatio }) {
       state.generateCalls += 1;
       state.lastPrompt = prompt;
@@ -286,6 +290,10 @@ test('generateFromReference recria o desenho sem cabecalho e com o pedido do pro
   assert.equal(state.lastExtraParts[0].inlineData.data, Buffer.from('jpeg-reduzido').toString('base64'));
   assert.equal(state.lastAspectRatio, '2:3', 'segue a proporção da folha de referência');
   assert.match(state.lastPrompt, /Keep the activity title/, 'manter o enunciado');
+  assert.equal(state.transcribeCalls, 1, 'enunciado lido uma vez pelo modelo de texto');
+  assert.match(state.lastPrompt, /copy it letter by letter[\s\S]*VAMOS BRINCAR\?\n1\. Pinte a joaninha de vermelho\./);
+  assert.match(state.lastPrompt, /never duplicate, split or add lines/);
+  assert.match(state.lastPrompt, /perfectly horizontal and left-aligned/);
   assert.match(state.lastPrompt, /"Name:" lines/);
   assert.match(state.lastPrompt, /QR code\) is added later by our own system/);
   assert.equal(state.lastToPngOptions.darkFrame, true, 'moldura escura de foto sai');
@@ -304,6 +312,7 @@ test('generateFromReference recria o desenho sem cabecalho e com o pedido do pro
   assert.equal(plain.items[0].title, 'Desenho a partir de referencia');
   assert.doesNotMatch(state.lastPrompt, /Changes requested/);
   assert.match(state.lastPrompt, /headings/, 'sem manter: tira títulos e textos');
+  assert.equal(state.transcribeCalls, 1, 'sem manter o enunciado nao transcreve');
   assert.match(state.lastPrompt, /Keep the background scene/);
 });
 
@@ -479,6 +488,40 @@ test('iaraImage: resposta sem imagem por motivo que nao e seguranca tenta de nov
     (error) => error.code === 'IARA_IMAGE_BLOCKED'
   );
   assert.equal(safetyCalls, 1);
+});
+
+test('iaraImage: transcreve o enunciado da referencia com o modelo de texto', async () => {
+  const calls = [];
+  const text = await iaraImageClient.transcribeReferenceText({
+    imagePart: { inlineData: { mimeType: 'image/jpeg', data: 'abc' } },
+    apiKey: 'k',
+    provider: 'gemini',
+    httpClient: {
+      async post(url, body) {
+        calls.push({ url, body });
+        return { data: { candidates: [{ content: { parts: [{ text: '  VAMOS BRINCAR?\n1. Jogue o dado.  ' }] } }] } };
+      },
+    },
+  });
+  assert.equal(text, 'VAMOS BRINCAR?\n1. Jogue o dado.');
+  assert.match(calls[0].url, /gemini-2\.5-flash:generateContent/);
+  assert.equal(calls[0].body.contents[0].parts[0].inlineData.data, 'abc');
+
+  // Falha na leitura nao impede a geracao.
+  const failed = await iaraImageClient.transcribeReferenceText({
+    imagePart: { inlineData: { mimeType: 'image/jpeg', data: 'abc' } },
+    apiKey: 'k',
+    httpClient: { async post() { throw Object.assign(new Error('x'), { response: { status: 500 } }); } },
+  });
+  assert.equal(failed, '');
+});
+
+test('referencia: pedido sempre corrige perspectiva, simetria e tracos', () => {
+  const prompt = iaraImageClient.buildReferencePrompt({ style: 'lineart' });
+  assert.match(prompt, /Do NOT trace or copy the photo/);
+  assert.match(prompt, /perspective distortion/);
+  assert.match(prompt, /symmetric/);
+  assert.match(prompt, /"melhorar"/);
 });
 
 test('referencia: manter o enunciado muda o pedido e o pedido do professor tem prioridade', () => {
