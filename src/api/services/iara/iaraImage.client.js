@@ -577,8 +577,61 @@ async function extractRequiredTexts({
   }
 }
 
+const DESCRIBE_PAGE_PROMPT =
+  'This image is a photo or scan of a printed worksheet for young children (in Brazilian Portuguese). It may be '
+  + 'tilted, curved or in perspective. Describe the worksheet so that a designer can redraw it from scratch as a '
+  + 'clean, straight page WITHOUT seeing the photo. Write the description in Portuguese, top to bottom: the title '
+  + 'and subtitle; each numbered item with its exact instruction text; the boxes, circles, numbers inside them and '
+  + 'how they are arranged (rows, columns, sequences); every illustration (characters, objects, decorations) and '
+  + 'where it is. Ignore "Nome:"/"Name:" lines, dates, school headers, page numbers, photo borders and paper '
+  + 'texture. Then list every text that must be written on the page, exactly spelled. '
+  + 'Answer only with JSON: {"description": "...", "texts": ["...", "..."]}.';
+
+/**
+ * Descreve a folha da referencia (texto exato, itens, quadros, figuras e
+ * posicoes) para redesenha-la do zero sem a foto, que o modelo de imagem
+ * tende a copiar com a perspectiva torta. Falhas devolvem null.
+ */
+async function describeReferencePage({
+  imagePart,
+  httpClient = axios,
+  provider = getProvider(),
+  apiKey = getApiKey(provider),
+  model = String(process.env.IARA_TEXT_MODEL || TEXT_MODEL).trim() || TEXT_MODEL,
+}) {
+  if (!apiKey || !imagePart) return null;
+  try {
+    const response = await httpClient.post(
+      buildEndpoint(model, provider),
+      {
+        contents: [{ role: 'user', parts: [imagePart, { text: DESCRIBE_PAGE_PROMPT }] }],
+        generationConfig: { temperature: 0, maxOutputTokens: 4000, responseMimeType: 'application/json' },
+      },
+      {
+        headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
+        timeout: 60000,
+      }
+    );
+    const text = (response?.data?.candidates?.[0]?.content?.parts || [])
+      .map((part) => part?.text || '').join('').trim();
+    const parsed = JSON.parse(text.replace(/^```(?:json)?|```$/g, '').trim());
+    const description = String(parsed?.description || '').trim();
+    if (!description) return null;
+    return {
+      description: description.slice(0, 6000),
+      texts: Array.isArray(parsed?.texts)
+        ? parsed.texts.map((item) => String(item).trim()).filter(Boolean).slice(0, 40)
+        : [],
+    };
+  } catch (error) {
+    console.warn('[Iara imagem] Nao foi possivel descrever a folha da referencia', safeCause(error));
+    return null;
+  }
+}
+
 module.exports = {
   generateImage,
+  describeReferencePage,
   getTextImageModelNames,
   extractRequiredTexts,
   transcribeReferenceText,

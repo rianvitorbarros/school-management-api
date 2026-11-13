@@ -862,15 +862,52 @@ class MediaAssetService {
     const referencePart = {
       inlineData: { mimeType: reference.mimeType, data: reference.buffer.toString('base64') },
     };
-    // Manter o enunciado: o modelo de texto le o enunciado antes, para o de
-    // imagem escrever as palavras certas.
-    const transcribedText = keepText && this.imageClient.transcribeReferenceText
-      ? await this.imageClient.transcribeReferenceText({ imagePart: referencePart })
-      : '';
     const aspectRatio = style === 'icon'
       ? '1:1'
       : this.imageClient.closestAspectRatio(reference.width, reference.height);
     const title = instructions || 'Desenho a partir de referencia';
+    const fields = {
+      visibility: 'school',
+      kind: this.imageClient.IMAGE_STYLES[style].kind,
+      source: 'ai-from-reference',
+      title: title.slice(0, 120),
+      tags: tagsFromPrompt(instructions),
+      prompt: instructions,
+      style,
+    };
+
+    // Manter o enunciado: o modelo de texto descreve a folha (textos exatos,
+    // itens, quadros, figuras) e o de imagem a redesenha do zero SEM a foto.
+    // Com a foto junto, ele copia a perspectiva torta e o texto curvo.
+    if (keepText && this.imageClient.describeReferencePage) {
+      const page = await this.imageClient.describeReferencePage({ imagePart: referencePart });
+      if (page) {
+        const request = instructions
+          ? `${page.description}\n\nPedido do professor (ajustes): ${instructions}`
+          : page.description;
+        return this._generateAndStore({
+          context,
+          quota,
+          count,
+          request: {
+            prompt: this.imageClient.buildDetailedPrompt(request, style, {
+              background,
+              requiredTexts: [...new Set(page.texts)],
+            }),
+            models: this.imageClient.getTextImageModelNames?.(),
+            aspectRatio,
+          },
+          processing,
+          fields,
+        });
+      }
+    }
+
+    // Sem manter o enunciado (ou se a descricao falhar): a referencia vai
+    // junto e a Iara recria o desenho. O enunciado, se pedido, e lido antes.
+    const transcribedText = keepText && this.imageClient.transcribeReferenceText
+      ? await this.imageClient.transcribeReferenceText({ imagePart: referencePart })
+      : '';
 
     return this._generateAndStore({
       context,
@@ -885,15 +922,7 @@ class MediaAssetService {
         aspectRatio,
       },
       processing: { ...processing, darkFrame: true },
-      fields: {
-        visibility: 'school',
-        kind: this.imageClient.IMAGE_STYLES[style].kind,
-        source: 'ai-from-reference',
-        title: title.slice(0, 120),
-        tags: tagsFromPrompt(instructions),
-        prompt: instructions,
-        style,
-      },
+      fields,
     });
   }
 
