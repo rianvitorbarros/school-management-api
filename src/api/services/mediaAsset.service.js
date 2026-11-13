@@ -813,6 +813,14 @@ class MediaAssetService {
     } catch (error) {
       throw createHttpError('Nao foi possivel ler a imagem de referencia.', 400, 'IARA_REFERENCE_INVALID');
     }
+    const referencePart = {
+      inlineData: { mimeType: reference.mimeType, data: reference.buffer.toString('base64') },
+    };
+    // Manter o enunciado: o modelo de texto le o enunciado antes, para o de
+    // imagem escrever as palavras certas.
+    const transcribedText = keepText && this.imageClient.transcribeReferenceText
+      ? await this.imageClient.transcribeReferenceText({ imagePart: referencePart })
+      : '';
     const aspectRatio = style === 'icon'
       ? '1:1'
       : this.imageClient.closestAspectRatio(reference.width, reference.height);
@@ -823,8 +831,10 @@ class MediaAssetService {
       quota,
       count,
       request: {
-        prompt: this.imageClient.buildReferencePrompt({ instructions, style, background, keepText }),
-        extraParts: [{ inlineData: { mimeType: reference.mimeType, data: reference.buffer.toString('base64') } }],
+        prompt: this.imageClient.buildReferencePrompt({
+          instructions, style, background, keepText, transcribedText,
+        }),
+        extraParts: [referencePart],
         aspectRatio,
       },
       processing: { ...processing, darkFrame: true },

@@ -182,22 +182,39 @@ const REFERENCE_STYLE_PROMPTS = {
     + 'pure white background, one object only, centered, filling most of the canvas.',
 };
 
-function buildReferencePrompt({ instructions = '', style = 'lineart', background, keepText = false } = {}) {
+function buildReferencePrompt({
+  instructions = '', style = 'lineart', background, keepText = false, transcribedText = '',
+} = {}) {
   const parts = [
     'Use the attached image only as a visual reference. Redraw it as a new, clean drawing for a '
       + 'preschool worksheet, keeping the same characters, objects, composition and mood.',
     'The reference may be a photo or a scan of a printed page (tilted, with shadows, dark background or page '
       + 'edges). The result must be a clean digital illustration on a flat, pure white canvas, perfectly straight '
       + '(no perspective, no tilt): no photo borders, no dark background around the page, no page edges or folds.',
+    'Do NOT trace or copy the photo pixel by pixel: rebuild the page from scratch, fixing its defects. Correct any '
+      + 'perspective distortion, rotation or skew; make shapes symmetric and well proportioned (circles truly round, '
+      + 'center lines straight and centered, matching left and right parts); use smooth, clean, uniform outlines; '
+      + 'align elements neatly. Keep the same number of lines and parts as the reference: never duplicate, split '
+      + 'or add lines (a single dividing line stays a single line). If the teacher asks to "improve" ("melhorar", '
+      + '"deixar mais bonito", "caprichar"), apply exactly these corrections while keeping the same content.',
   ];
   if (keepText) {
     parts.push(
       'Keep the activity title and instructions text that appear in the reference, with exactly the same words '
-        + '(Portuguese, correct spelling and accents), redrawn as clean, bold, easy-to-read printed letters, straight and horizontal, '
-        + 'in the same place on the page. Remove only: "Name:" lines and other fields to write on, logos, school headers, page '
+        + '(Portuguese, correct spelling and accents), redrawn as clean, bold, easy-to-read printed letters in the same place on the page. '
+        + 'Every line of text must be perfectly horizontal and left-aligned like a freshly printed worksheet (never '
+        + 'tilted or curved, even if it is in the photo), and any box or balloon around the text must be a neat, '
+        + 'straight rectangle with rounded corners (a dashed border stays dashed, evenly spaced). Remove only: "Name:" lines and other fields to write on, logos, school headers, page '
         + 'numbers, watermarks, scan marks, shadows of the paper and paper texture. The worksheet header (school '
         + 'name, student name, QR code) is added later by our own system.'
     );
+    const exactText = String(transcribedText || '').trim();
+    if (exactText) {
+      parts.push(
+        'The text is exactly this (copy it letter by letter, with the same line breaks and accents; do not '
+          + 'invent, drop or misspell any word):\n' + exactText
+      );
+    }
   } else {
     parts.push(
       'Remove everything that is not part of the illustration itself: titles, headings, instructions, any text, '
@@ -409,8 +426,49 @@ async function generateImage({
   );
 }
 
+const TEXT_MODEL = 'gemini-2.5-flash';
+const TRANSCRIBE_PROMPT =
+  'Transcribe exactly the title and the instructions text printed on this worksheet (it is in Portuguese). '
+  + 'Keep the original words, accents, numbering and line breaks. Do not include "Nome:"/"Name:" lines, dates, '
+  + 'school names, page numbers or text inside the drawing. Answer with the text only, nothing else. '
+  + 'If there is no such text, answer with an empty response.';
+
+/**
+ * Le o enunciado da imagem de referencia com o modelo de texto (que le
+ * muito melhor que o de imagem), para o desenho copiar letra por letra.
+ * Falhas nao impedem a geracao: devolve ''.
+ */
+async function transcribeReferenceText({
+  imagePart,
+  httpClient = axios,
+  provider = getProvider(),
+  apiKey = getApiKey(provider),
+  model = String(process.env.IARA_TEXT_MODEL || TEXT_MODEL).trim() || TEXT_MODEL,
+}) {
+  if (!apiKey || !imagePart) return '';
+  try {
+    const response = await httpClient.post(
+      buildEndpoint(model, provider),
+      {
+        contents: [{ role: 'user', parts: [imagePart, { text: TRANSCRIBE_PROMPT }] }],
+        generationConfig: { temperature: 0, maxOutputTokens: 800 },
+      },
+      {
+        headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
+        timeout: 30000,
+      }
+    );
+    const parts = response?.data?.candidates?.[0]?.content?.parts || [];
+    return parts.map((part) => part?.text || '').join('').trim().slice(0, 1200);
+  } catch (error) {
+    console.warn('[Iara imagem] Nao foi possivel transcrever o enunciado da referencia', safeCause(error));
+    return '';
+  }
+}
+
 module.exports = {
   generateImage,
+  transcribeReferenceText,
   buildPrompt,
   buildReferencePrompt,
   closestAspectRatio,
