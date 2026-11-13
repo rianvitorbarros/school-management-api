@@ -109,6 +109,64 @@ function isLightPixel(pixels, pixel) {
   return min >= 225 && Math.max(r, g, b) - min <= 28;
 }
 
+function isDarkPixel(pixels, pixel, limit = 90) {
+  const index = pixel * 4;
+  return Math.max(pixels[index], pixels[index + 1], pixels[index + 2]) < limit;
+}
+
+/**
+ * Moldura escura (fundo da mesa numa foto da folha, borda de scanner):
+ * se quase toda a borda e escura, remove o escuro ligado as bordas.
+ * O traco preto do desenho, separado da borda por branco, fica.
+ */
+function removeDarkFrame(pixels, width, height) {
+  let dark = 0;
+  let total = 0;
+  const count = (pixel) => {
+    total += 1;
+    if (isDarkPixel(pixels, pixel)) dark += 1;
+  };
+  for (let x = 0; x < width; x += 1) {
+    count(x);
+    count((height - 1) * width + x);
+  }
+  for (let y = 1; y < height - 1; y += 1) {
+    count(y * width);
+    count(y * width + width - 1);
+  }
+  if (!total || dark / total < 0.85) return false;
+  const size = width * height;
+  const marked = new Uint8Array(size);
+  const stack = new Int32Array(size);
+  let top = 0;
+  // Inclui tons medios (sombra/linha da borda do papel) ligados a moldura.
+  const push = (pixel) => {
+    if (marked[pixel] || !isDarkPixel(pixels, pixel, 170)) return;
+    marked[pixel] = 1;
+    stack[top++] = pixel;
+  };
+  for (let x = 0; x < width; x += 1) {
+    push(x);
+    push((height - 1) * width + x);
+  }
+  for (let y = 0; y < height; y += 1) {
+    push(y * width);
+    push(y * width + width - 1);
+  }
+  while (top > 0) {
+    const pixel = stack[--top];
+    const x = pixel % width;
+    if (x > 0) push(pixel - 1);
+    if (x < width - 1) push(pixel + 1);
+    if (pixel >= width) push(pixel - width);
+    if (pixel < size - width) push(pixel + width);
+  }
+  for (let pixel = 0; pixel < size; pixel += 1) {
+    if (marked[pixel]) pixels[pixel * 4 + 3] = 0;
+  }
+  return true;
+}
+
 /** Fracao da borda da imagem que e branca/clara (1 = moldura toda branca). */
 function lightBorderRatio(pixels, width, height) {
   let light = 0;
@@ -255,6 +313,7 @@ const defaultImageProcessor = {
     transparentWhite = false,
     removeBackground = false,
     removeFrame = false,
+    darkFrame = false,
     trim = false,
   } = {}) {
     // eslint-disable-next-line global-require
@@ -267,6 +326,14 @@ const defaultImageProcessor = {
     const context = canvas.getContext('2d');
     context.drawImage(image, 0, 0, width, height);
     let cleared = false;
+    if (darkFrame) {
+      // Referencia fotografada: a IA as vezes copia a mesa/borda escura.
+      const data = context.getImageData(0, 0, width, height);
+      if (removeDarkFrame(data.data, width, height)) {
+        context.putImageData(data, 0, 0);
+        cleared = true;
+      }
+    }
     if (transparentWhite) {
       const data = context.getImageData(0, 0, width, height);
       const pixels = data.data;
@@ -731,6 +798,7 @@ class MediaAssetService {
       throw createHttpError('Formato nao suportado. Use PNG, JPG ou WEBP.', 400, 'IARA_REFERENCE_INVALID_TYPE');
     }
     const instructions = normalizeText(payload.instructions || payload.prompt).replace(/\s+/g, ' ');
+    const keepText = payload.keepText === true || payload.keepText === 'true';
     if (instructions.length > PROMPT_MAX) {
       throw createHttpError(`Pedido muito longo (maximo ${PROMPT_MAX} caracteres).`, 400, 'IARA_IMAGE_PROMPT_TOO_LONG');
     }
@@ -755,11 +823,11 @@ class MediaAssetService {
       quota,
       count,
       request: {
-        prompt: this.imageClient.buildReferencePrompt({ instructions, style, background }),
+        prompt: this.imageClient.buildReferencePrompt({ instructions, style, background, keepText }),
         extraParts: [{ inlineData: { mimeType: reference.mimeType, data: reference.buffer.toString('base64') } }],
         aspectRatio,
       },
-      processing,
+      processing: { ...processing, darkFrame: true },
       fields: {
         visibility: 'school',
         kind: this.imageClient.IMAGE_STYLES[style].kind,
@@ -835,3 +903,4 @@ module.exports.tagsFromPrompt = tagsFromPrompt;
 module.exports.normalizeTags = normalizeTags;
 module.exports.defaultImageProcessor = defaultImageProcessor;
 module.exports.removeEdgeBackground = removeEdgeBackground;
+module.exports.removeDarkFrame = removeDarkFrame;

@@ -182,17 +182,32 @@ const REFERENCE_STYLE_PROMPTS = {
     + 'pure white background, one object only, centered, filling most of the canvas.',
 };
 
-function buildReferencePrompt({ instructions = '', style = 'lineart', background } = {}) {
+function buildReferencePrompt({ instructions = '', style = 'lineart', background, keepText = false } = {}) {
   const parts = [
-    'Use the attached image only as a visual reference. Redraw its illustration as a new, clean drawing for a '
+    'Use the attached image only as a visual reference. Redraw it as a new, clean drawing for a '
       + 'preschool worksheet, keeping the same characters, objects, composition and mood.',
-    'Remove everything that is not part of the illustration itself: titles, headings, instructions, any text, '
-      + 'letters or numbers, "Name:" lines and other fields to write on, page borders and frames, logos, school '
-      + 'headers, page numbers, watermarks, scan marks, shadows of the paper and paper texture. Do not add any text. '
-      + 'The worksheet header (school name, student name, QR code) is added later by our own system. '
-      + 'Let the drawing fill the whole image: do not leave empty space where the removed text used to be.',
-    REFERENCE_STYLE_PROMPTS[style] || REFERENCE_STYLE_PROMPTS.lineart,
+    'The reference may be a photo or a scan of a printed page (tilted, with shadows, dark background or page '
+      + 'edges). The result must be a clean digital illustration on a flat, pure white canvas, perfectly straight '
+      + '(no perspective, no tilt): no photo borders, no dark background around the page, no page edges or folds.',
   ];
+  if (keepText) {
+    parts.push(
+      'Keep the activity title and instructions text that appear in the reference, with exactly the same words '
+        + '(Portuguese, correct spelling and accents), redrawn as clean, bold, easy-to-read printed letters, straight and horizontal, '
+        + 'in the same place on the page. Remove only: "Name:" lines and other fields to write on, logos, school headers, page '
+        + 'numbers, watermarks, scan marks, shadows of the paper and paper texture. The worksheet header (school '
+        + 'name, student name, QR code) is added later by our own system.'
+    );
+  } else {
+    parts.push(
+      'Remove everything that is not part of the illustration itself: titles, headings, instructions, any text, '
+        + 'letters or numbers, "Name:" lines and other fields to write on, page borders and frames, logos, school '
+        + 'headers, page numbers, watermarks, scan marks, shadows of the paper and paper texture. Do not add any text. '
+        + 'The worksheet header (school name, student name, QR code) is added later by our own system. '
+        + 'Let the drawing fill the whole image: do not leave empty space where the removed text used to be.'
+    );
+  }
+  parts.push(REFERENCE_STYLE_PROMPTS[style] || REFERENCE_STYLE_PROMPTS.lineart);
   if (style === 'color') {
     parts.push(normalizeBackground(background) === 'scene'
       ? 'Keep the background scene, in soft flat colors, full-bleed to all four edges of the image '
@@ -201,7 +216,11 @@ function buildReferencePrompt({ instructions = '', style = 'lineart', background
   }
   const extra = String(instructions || '').trim();
   if (extra) {
-    parts.push(`Changes requested by the teacher (follow them, they may be written in Portuguese): ${extra}`);
+    parts.push(
+      `Changes requested by the teacher (they may be written in Portuguese): ${extra}. `
+        + 'If a request conflicts with the rules above (for example, asking to keep or add some text), '
+        + 'follow the teacher\'s request.'
+    );
   }
   return parts.join(' ');
 }
@@ -222,6 +241,14 @@ function closestAspectRatio(width, height) {
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Motivos de parada que sao bloqueio de conteudo de verdade (nao adianta repetir). */
+const SAFETY_FINISH_REASONS = new Set([
+  'SAFETY', 'IMAGE_SAFETY', 'PROHIBITED_CONTENT', 'BLOCKLIST', 'SPII', 'IMAGE_PROHIBITED_CONTENT',
+]);
+
+/** Parecido demais com a original (pagina de livro, por exemplo). */
+const RECITATION_FINISH_REASONS = new Set(['RECITATION', 'IMAGE_RECITATION']);
 
 /**
  * Problema de faturamento do projeto (nao adianta repetir):
@@ -295,15 +322,27 @@ async function generateImage({
         const parts = candidate?.content?.parts || [];
         const imagePart = parts.find((part) => part?.inlineData?.data || part?.inline_data?.data);
         if (!imagePart) {
-          const blocked = response?.data?.promptFeedback?.blockReason
-            || (candidate?.finishReason && candidate.finishReason !== 'STOP' ? candidate.finishReason : null);
-          if (blocked) {
+          const finishReason = String(candidate?.finishReason || '');
+          const promptBlock = response?.data?.promptFeedback?.blockReason || null;
+          console.warn('[Iara imagem] Resposta sem imagem', { model, attempt, finishReason, promptBlock });
+          if (promptBlock || SAFETY_FINISH_REASONS.has(finishReason)) {
             throw new IaraImageError(
               'A Iara nao pode gerar essa imagem. Tente descrever de outro jeito.',
               { statusCode: 422, code: 'IARA_IMAGE_BLOCKED' }
             );
           }
-          throw new IaraImageError('A Iara nao retornou imagem.', { statusCode: 502, code: 'IARA_IMAGE_EMPTY' });
+          // Outros motivos (parecida demais com a original, "IMAGE_OTHER",
+          // resposta so com texto) costumam passar numa nova tentativa.
+          const recitation = RECITATION_FINISH_REASONS.has(finishReason);
+          const empty = new IaraImageError(
+            recitation
+              ? 'A Iara nao conseguiu recriar a imagem tao parecida com a original. '
+                + 'Tente pedir algumas mudancas (ex.: "deixar mais simples").'
+              : 'A Iara nao conseguiu gerar a imagem desta vez. Tente novamente.',
+            { statusCode: 502, code: recitation ? 'IARA_IMAGE_TOO_SIMILAR' : 'IARA_IMAGE_EMPTY' }
+          );
+          empty.retryable = true;
+          throw empty;
         }
         const inline = imagePart.inlineData || imagePart.inline_data;
         return {
@@ -340,7 +379,8 @@ async function generateImage({
         }
         lastError = error;
         const status = Number(error?.response?.status || error?.status);
-        const retryable = RETRYABLE_STATUS.has(status)
+        const retryable = error?.retryable === true
+          || RETRYABLE_STATUS.has(status)
           || /timeout|ECONNRESET|ETIMEDOUT|socket hang up/i.test(String(error?.message || ''));
         console.warn('[Iara imagem] Falha na chamada ao modelo', {
           model,

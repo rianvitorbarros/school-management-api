@@ -102,7 +102,7 @@ Arquivar nao apaga o arquivo: atividades que ja usam a imagem continuam imprimin
 | GET | `/:assetId/content` e `/:assetId/thumbnail` | Bytes da imagem/miniatura (passa pela API com o token) |
 | GET | `/ai/quota` | Limite diario da escola e estilos disponiveis |
 | POST | `/ai/generate` | `{ prompt, style: lineart|color|icon, count: 1-4, background?: transparent|scene }` |
-| POST | `/ai/generate-from-reference` | multipart: `file` (PNG/JPG/WEBP ate 8 MB), `instructions?` (ate 300), `style`, `count`, `background?` |
+| POST | `/ai/generate-from-reference` | multipart: `file` (PNG/JPG/WEBP ate 8 MB), `instructions?` (ate 300), `style`, `count`, `background?`, `keepText?` (`true` mantem o titulo/enunciado da referencia) |
 
 Fundo das imagens geradas:
 
@@ -115,7 +115,11 @@ Fundo das imagens geradas:
 
 Referencia: a imagem e reduzida (JPEG ate 1536 px) e enviada ao modelo com instrucoes fixas para recriar so a
 ilustracao, sem titulos, textos, linhas de "Nome:", molduras, logotipos ou cabecalho (o AcademyHub coloca o
-proprio). A proporcao da imagem gerada segue a da referencia. A referencia nao e guardada; as imagens geradas
+proprio). Com `keepText=true`, o titulo e o enunciado da atividade sao mantidos (sai so linha de "Nome:", logotipo
+e cabecalho). Se o pedido do professor conflitar com essas regras, vale o pedido. Fotos da folha: a moldura escura
+(mesa/borda do scanner) que o modelo copie e removida no processamento. A proporcao da imagem gerada segue a da referencia.
+Respostas sem imagem por motivo que nao e seguranca (ex.: `IMAGE_OTHER`, parecida demais com a original) sao
+repetidas automaticamente; se persistir, `IARA_IMAGE_TOO_SIMILAR` pede ao professor algumas mudancas. A referencia nao e guardada; as imagens geradas
 entram no acervo da escola com `source: ai-from-reference` e contam no limite diario.
 
 ## Iara: geracao de imagens
