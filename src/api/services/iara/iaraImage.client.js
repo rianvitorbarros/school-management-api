@@ -131,6 +131,21 @@ function getImageModelNames() {
   return configured.length ? configured : DEFAULT_IMAGE_MODELS;
 }
 
+/**
+ * Modelos para imagens com TEXTO (folha inteira, manter o enunciado): o
+ * gemini-3-pro-image escreve muito melhor, mas custa mais; por isso so e
+ * usado nesses casos. Configuravel por IARA_IMAGE_TEXT_MODELS.
+ */
+const DEFAULT_TEXT_IMAGE_MODELS = ['gemini-3-pro-image', 'gemini-2.5-flash-image'];
+
+function getTextImageModelNames() {
+  const configured = String(process.env.IARA_IMAGE_TEXT_MODELS || '')
+    .split(',')
+    .map((name) => name.trim())
+    .filter(Boolean);
+  return configured.length ? configured : DEFAULT_TEXT_IMAGE_MODELS;
+}
+
 function getTimeoutMs() {
   const value = Number.parseInt(process.env.IARA_IMAGE_TIMEOUT_MS, 10);
   return Number.isFinite(value) && value > 0 ? value : 90000;
@@ -164,6 +179,57 @@ function buildPrompt(subject, style, { background } = {}) {
   return style === 'color'
     ? `${prompt} The subject is isolated: no ground, no scenery, no cast shadow.`
     : prompt;
+}
+
+/**
+ * Pedido detalhado (folha de atividade inteira descrita pelo professor, com
+ * titulo, legenda, varios elementos): o texto do professor manda; o estilo
+ * so acrescenta as regras de desenho, sem proibir texto.
+ */
+const DETAILED_STYLE_RULES = {
+  lineart:
+    'Black and white printable worksheet for young children: thick, clean, closed black outlines on a pure white '
+    + 'background; no shading, no gray tones, no textures, no gradients. Shapes meant to be colored by the children '
+    + 'stay white; only color what the request explicitly asks to be colored.',
+  color:
+    'Cute, colorful illustration for preschool children: flat bright colors, thick dark outlines, clean shapes, '
+    + 'no textures or gradients.',
+  icon:
+    'Very simple icon-style drawings: thick black outlines, flat simple colors, pure white background.',
+};
+
+function buildDetailedPrompt(request, style = 'lineart', { background, requiredTexts = [] } = {}) {
+  const parts = [
+    'Create a single image that follows the teacher\'s detailed request below exactly (it is written in Brazilian '
+      + 'Portuguese). Respect every listed element, position and rule.',
+    DETAILED_STYLE_RULES[style] || DETAILED_STYLE_RULES.lineart,
+  ];
+  if (style === 'color') {
+    parts.push(normalizeBackground(background) === 'scene'
+      ? 'Background scene allowed, full-bleed to the edges.'
+      : 'Plain pure white background, no scenery.');
+  }
+  parts.push(
+    'Any text in the image must be in Brazilian Portuguese with correct spelling and accents, large and easy to '
+      + 'read for children. Do not add a school header, student name, class, date or QR code: the AcademyHub adds '
+      + 'them to the page. Portrait (vertical) page layout with comfortable margins. Do not draw a border or '
+      + 'frame around the whole page.'
+  );
+  const texts = (requiredTexts || []).map((text) => String(text).trim()).filter(Boolean);
+  if (texts.length) {
+    parts.push(
+      'The image must contain exactly these texts, spelled letter by letter (same words, accents and '
+        + `punctuation, nothing missing): ${texts.map((text) => `"${text}"`).join(' | ')}.`
+    );
+  }
+  parts.push(`Teacher's request:\n${String(request || '').trim()}`);
+  return parts.join(' ');
+}
+
+/** Pedido longo ou com varias linhas: e a descricao de uma folha inteira. */
+function isDetailedRequest(text) {
+  const raw = String(text || '').trim();
+  return raw.length > 220 || /\n/.test(raw);
 }
 
 /**
@@ -300,6 +366,7 @@ async function generateImage({
   prompt,
   extraParts = [],
   aspectRatio = '1:1',
+  models: modelOverride = null,
   httpClient = axios,
   provider = getProvider(),
   apiKey = getApiKey(provider),
@@ -312,7 +379,9 @@ async function generateImage({
     );
   }
 
-  const models = getImageModelNames();
+  const models = Array.isArray(modelOverride) && modelOverride.length
+    ? modelOverride
+    : getImageModelNames();
   let lastError = null;
 
   for (const model of models) {
@@ -466,9 +535,55 @@ async function transcribeReferenceText({
   }
 }
 
+const TEXTS_PROMPT =
+  'Below is a teacher\'s request (in Portuguese) for an illustrated worksheet image. List every text that must be '
+  + 'WRITTEN inside the image (title, labels, words), exactly as they should appear, with correct Portuguese spelling '
+  + 'and accents. Do not include instructions about how to draw, nor school header, student name, class or date. '
+  + 'Answer only with a JSON array of strings (empty array if no text).\n\nRequest:\n';
+
+/**
+ * Lista os textos que a imagem deve conter (titulo, legendas), para o modelo
+ * de imagem escrever sem erros. Falhas nao impedem a geracao: devolve [].
+ */
+async function extractRequiredTexts({
+  request,
+  httpClient = axios,
+  provider = getProvider(),
+  apiKey = getApiKey(provider),
+  model = String(process.env.IARA_TEXT_MODEL || TEXT_MODEL).trim() || TEXT_MODEL,
+}) {
+  if (!apiKey || !String(request || '').trim()) return [];
+  try {
+    const response = await httpClient.post(
+      buildEndpoint(model, provider),
+      {
+        contents: [{ role: 'user', parts: [{ text: TEXTS_PROMPT + String(request) }] }],
+        generationConfig: { temperature: 0, maxOutputTokens: 600, responseMimeType: 'application/json' },
+      },
+      {
+        headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
+        timeout: 30000,
+      }
+    );
+    const text = (response?.data?.candidates?.[0]?.content?.parts || [])
+      .map((part) => part?.text || '').join('').trim();
+    const parsed = JSON.parse(text.replace(/^```(?:json)?|```$/g, '').trim());
+    return Array.isArray(parsed)
+      ? parsed.map((item) => String(item).trim()).filter(Boolean).slice(0, 30)
+      : [];
+  } catch (error) {
+    console.warn('[Iara imagem] Nao foi possivel listar os textos do pedido', safeCause(error));
+    return [];
+  }
+}
+
 module.exports = {
   generateImage,
+  getTextImageModelNames,
+  extractRequiredTexts,
   transcribeReferenceText,
+  buildDetailedPrompt,
+  isDetailedRequest,
   buildPrompt,
   buildReferencePrompt,
   closestAspectRatio,
