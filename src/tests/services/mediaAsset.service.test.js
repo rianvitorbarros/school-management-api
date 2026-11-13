@@ -85,6 +85,14 @@ function createHarness({ dailyAiLimit = 10, generate } = {}) {
     normalizeBackground: iaraImageClient.normalizeBackground,
     buildDetailedPrompt: iaraImageClient.buildDetailedPrompt,
     isDetailedRequest: iaraImageClient.isDetailedRequest,
+    async describeReferencePage() {
+      state.describeCalls = (state.describeCalls || 0) + 1;
+      if (state.describeFails) return null;
+      return {
+        description: 'Título "Quem é o vizinho do número?". 1. Escreva o número que vem antes do 2.',
+        texts: ['Quem é o vizinho do número?', '2', '2'],
+      };
+    },
     async transcribeReferenceText() {
       state.transcribeCalls = (state.transcribeCalls || 0) + 1;
       return 'VAMOS BRINCAR?\n1. Pinte a joaninha de vermelho.';
@@ -281,46 +289,63 @@ test('generateWithAi colorido: sem fundo por padrao e com cenario quando pedido'
   assert.equal(state.lastToPngOptions.removeBackground, undefined);
 });
 
-test('generateFromReference recria o desenho sem cabecalho e com o pedido do professor', async () => {
+test('generateFromReference: manter o enunciado redesenha a folha do zero a partir da descricao', async () => {
   const { service, state, teacher } = createHarness();
   const result = await service.generateFromReference(
     teacher,
     { buffer: PNG_BYTES, originalname: 'whatsapp.png' },
-    { instructions: 'troque a bola por uma pipa', style: 'lineart', count: '2', keepText: 'true' }
+    { instructions: 'melhore a perspectiva', style: 'lineart', count: '2', keepText: 'true' }
   );
   assert.equal(result.items.length, 2);
   assert.equal(state.generateCalls, 2);
   assert.equal(result.items[0].source, 'ai-from-reference');
-  assert.equal(result.items[0].title, 'troque a bola por uma pipa');
+  assert.equal(result.items[0].title, 'melhore a perspectiva');
+  assert.equal(state.describeCalls, 1, 'a folha e descrita uma vez');
+  // A foto NAO vai para o modelo de imagem (ele copiaria a perspectiva).
+  assert.equal(state.lastExtraParts, undefined);
+  assert.match(state.lastPrompt, /Quem é o vizinho do número\?/);
+  assert.match(state.lastPrompt, /Pedido do professor \(ajustes\): melhore a perspectiva/);
+  assert.match(state.lastPrompt, /exactly these texts[\s\S]*"Quem é o vizinho do número\?" \| "2"\./, 'textos sem repetir');
+  assert.deepEqual(state.lastModels, ['texto-pro', 'rapido']);
+  assert.equal(state.lastAspectRatio, '2:3', 'segue a proporção da folha de referência');
+  assert.equal(state.transcribeCalls, undefined);
+
+  // Conta no limite diário da escola.
+  const quota = await service.getAiQuota(teacher);
+  assert.equal(quota.used, 2);
+});
+
+test('generateFromReference: sem manter o enunciado (ou se a descricao falhar) a referencia vai junto', async () => {
+  const { service, state, teacher } = createHarness();
+  state.describeFails = true;
+  await service.generateFromReference(
+    teacher,
+    { buffer: PNG_BYTES, originalname: 'whatsapp.png' },
+    { instructions: 'troque a bola por uma pipa', style: 'lineart', count: 1, keepText: 'true' }
+  );
   // A referência reduzida vai junto do pedido.
   assert.equal(state.lastExtraParts[0].inlineData.mimeType, 'image/jpeg');
   assert.equal(state.lastExtraParts[0].inlineData.data, Buffer.from('jpeg-reduzido').toString('base64'));
-  assert.equal(state.lastAspectRatio, '2:3', 'segue a proporção da folha de referência');
   assert.match(state.lastPrompt, /Keep the activity title/, 'manter o enunciado');
-  assert.equal(state.transcribeCalls, 1, 'enunciado lido uma vez pelo modelo de texto');
+  assert.equal(state.transcribeCalls, 1, 'enunciado lido pelo modelo de texto');
   assert.deepEqual(state.lastModels, ['texto-pro', 'rapido']);
   assert.match(state.lastPrompt, /copy it letter by letter[\s\S]*VAMOS BRINCAR\?\n1\. Pinte a joaninha de vermelho\./);
   assert.match(state.lastPrompt, /never duplicate, split or add lines/);
   assert.match(state.lastPrompt, /perfectly horizontal and left-aligned/);
   assert.match(state.lastPrompt, /"Name:" lines/);
-  assert.match(state.lastPrompt, /QR code\) is added later by our own system/);
   assert.equal(state.lastToPngOptions.darkFrame, true, 'moldura escura de foto sai');
   assert.match(state.lastPrompt, /troque a bola por uma pipa/);
   assert.match(state.lastPrompt, /coloring page/);
-  assert.equal(state.lastToPngOptions.transparentWhite, true);
 
-  // Conta no limite diário da escola.
-  const quota = await service.getAiQuota(teacher);
-  assert.equal(quota.used, 2);
-
-  // Sem pedido extra também funciona.
+  // Sem manter o enunciado: só o desenho, sem descrever nem transcrever.
+  state.describeCalls = 0;
   const plain = await service.generateFromReference(
     teacher, { buffer: PNG_BYTES }, { style: 'color', count: 1, background: 'scene' }
   );
   assert.equal(plain.items[0].title, 'Desenho a partir de referencia');
+  assert.equal(state.describeCalls, 0);
   assert.doesNotMatch(state.lastPrompt, /Changes requested/);
   assert.match(state.lastPrompt, /headings/, 'sem manter: tira títulos e textos');
-  assert.equal(state.transcribeCalls, 1, 'sem manter o enunciado nao transcreve');
   assert.match(state.lastPrompt, /Keep the background scene/);
 });
 
@@ -563,6 +588,26 @@ test('iaraImage: lista os textos do pedido e usa a lista de modelos indicada', a
   });
   assert.match(used[0], /modelo-texto:generateContent/);
   assert.deepEqual(iaraImageClient.getTextImageModelNames(), ['gemini-3-pro-image', 'gemini-2.5-flash-image']);
+});
+
+test('iaraImage: descreve a folha da referencia em JSON (descricao + textos)', async () => {
+  const page = await iaraImageClient.describeReferencePage({
+    imagePart: { inlineData: { mimeType: 'image/jpeg', data: 'abc' } },
+    apiKey: 'k',
+    httpClient: {
+      async post(url, body) {
+        assert.equal(body.generationConfig.responseMimeType, 'application/json');
+        return { data: { candidates: [{ content: { parts: [{ text: '{"description":"Folha com titulo","texts":["Quem é o vizinho do número?"]}' }] } }] } };
+      },
+    },
+  });
+  assert.deepEqual(page, { description: 'Folha com titulo', texts: ['Quem é o vizinho do número?'] });
+  const failed = await iaraImageClient.describeReferencePage({
+    imagePart: { inlineData: { mimeType: 'image/jpeg', data: 'abc' } },
+    apiKey: 'k',
+    httpClient: { async post() { return { data: { candidates: [{ content: { parts: [{ text: 'sem json' }] } }] } }; } },
+  });
+  assert.equal(failed, null);
 });
 
 test('iaraImage: transcreve o enunciado da referencia com o modelo de texto', async () => {

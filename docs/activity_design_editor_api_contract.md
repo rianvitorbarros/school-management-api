@@ -122,7 +122,10 @@ Fundo das imagens geradas:
 Referencia: a imagem e reduzida (JPEG ate 1536 px) e enviada ao modelo com instrucoes fixas para recriar so a
 ilustracao, sem titulos, textos, linhas de "Nome:", molduras, logotipos ou cabecalho (o AcademyHub coloca o
 proprio). A referencia e sempre reconstruida (nao copiada): perspectiva, inclinacao e simetria corrigidas, tracos limpos,
-sem duplicar linhas. Com `keepText=true`, o titulo e o enunciado da atividade sao mantidos (sai so linha de "Nome:", logotipo
+sem duplicar linhas. Com `keepText=true`, o modelo de texto primeiro DESCREVE a folha (titulo, cada item com o texto exato, quadros,
+figuras e posicoes, em JSON) e o modelo de imagem a redesenha do zero a partir dessa descricao, SEM receber a foto
+(com a foto junto ele copiava a perspectiva torta e o texto curvo). Se a descricao falhar, vale o fluxo abaixo, com a
+foto. Com `keepText=true`, o titulo e o enunciado da atividade sao mantidos (sai so linha de "Nome:", logotipo
 e cabecalho); antes de gerar, o modelo de texto (`IARA_TEXT_MODEL`, padrao `gemini-2.5-flash`) transcreve o enunciado
 e o texto exato vai no pedido da imagem, para as palavras sairem certas. Se o pedido do professor conflitar com essas regras, vale o pedido. Fotos da folha: a moldura escura
 (mesa/borda do scanner) que o modelo copie e removida no processamento. A proporcao da imagem gerada segue a da referencia.
