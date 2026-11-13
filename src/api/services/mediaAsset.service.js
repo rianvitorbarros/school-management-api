@@ -15,7 +15,9 @@ const MANAGER_ROLES = ['admin', 'coordenador', 'gestor', 'secretaria', 'diretor'
 const MAX_AI_IMAGES_PER_REQUEST = 4;
 const DEFAULT_AI_DAILY_LIMIT = 60;
 const PROMPT_MIN = 3;
-const PROMPT_MAX = 300;
+// Professores colam a descricao de uma folha inteira (titulo, legenda,
+// regras): cabe bem mais do que uma frase curta.
+const PROMPT_MAX = 4000;
 const STOPWORDS = new Set([
   'a', 'o', 'as', 'os', 'um', 'uma', 'uns', 'umas', 'de', 'da', 'do', 'das', 'dos', 'e', 'em', 'no', 'na',
   'nos', 'nas', 'com', 'para', 'por', 'que', 'se', 'ao', 'aos', 'à', 'às', 'seu', 'sua', 'muito', 'bem',
@@ -257,6 +259,31 @@ function visibleBounds(pixels, width, height, paddingRatio = 0.02) {
   const right = Math.min(width - 1, maxX + pad);
   const bottom = Math.min(height - 1, maxY + pad);
   return { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
+}
+
+/** Texto do professor com quebras de linha normalizadas (sem colapsar). */
+function cleanMultiline(value) {
+  return String(value ?? '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/** Titulo curto para o acervo a partir de um pedido longo. */
+function titleFromRequest(text) {
+  const lines = cleanMultiline(text)
+    .split('\n')
+    .map((line) => line.replace(/[*#_>`]/g, '').trim())
+    .filter(Boolean);
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^t[ií]tulo(?: da atividade)?\s*:?\s*(.*)$/i.exec(lines[index]);
+    if (match) {
+      const title = match[1] || lines[index + 1] || '';
+      if (title) return title.slice(0, 120);
+    }
+  }
+  return (lines[0] || 'Imagem da Iara').slice(0, 120);
 }
 
 function startOfToday(now) {
@@ -750,7 +777,8 @@ class MediaAssetService {
 
   async generateWithAi(actor, payload = {}) {
     const context = this.resolveContext(actor);
-    const subject = normalizeText(payload.prompt).replace(/\s+/g, ' ');
+    const raw = cleanMultiline(payload.prompt);
+    const subject = raw.replace(/\s+/g, ' ');
     if (subject.length < PROMPT_MIN) {
       throw createHttpError('Descreva a imagem que voce quer (ex.: "um elefante feliz").', 400, 'IARA_IMAGE_PROMPT_REQUIRED');
     }
@@ -761,20 +789,38 @@ class MediaAssetService {
     const count = this._resolveCount(payload);
     const quota = await this._ensureAiQuota(actor, count);
     const { background, processing } = this._resolveBackground(style, payload);
+    // Descricao de uma folha inteira: o pedido do professor manda e a imagem
+    // sai em pe (proporcao de pagina).
+    const detailed = this.imageClient.isDetailedRequest
+      ? this.imageClient.isDetailedRequest(raw)
+      : false;
+    // Os textos da folha (titulo, legendas) sao listados antes pelo modelo
+    // de texto, para o de imagem escrever sem erros de digitacao.
+    const requiredTexts = detailed && this.imageClient.extractRequiredTexts
+      ? await this.imageClient.extractRequiredTexts({ request: raw })
+      : [];
+    const request = detailed
+      ? {
+        prompt: this.imageClient.buildDetailedPrompt(raw, style, { background, requiredTexts }),
+        aspectRatio: '2:3',
+        // Folha com titulo e legendas: modelo que escreve melhor.
+        models: this.imageClient.getTextImageModelNames?.(),
+      }
+      : { prompt: this.imageClient.buildPrompt(subject, style, { background }) };
 
     return this._generateAndStore({
       context,
       quota,
       count,
-      request: { prompt: this.imageClient.buildPrompt(subject, style, { background }) },
+      request,
       processing,
       fields: {
         visibility: 'school',
         kind: this.imageClient.IMAGE_STYLES[style].kind,
         source: 'ai-generated',
-        title: subject.slice(0, 120),
+        title: detailed ? titleFromRequest(raw) : subject.slice(0, 120),
         tags: tagsFromPrompt(subject),
-        prompt: subject,
+        prompt: detailed ? raw : subject,
         style,
       },
     });
@@ -797,7 +843,7 @@ class MediaAssetService {
     if (!UPLOAD_CONTENT_TYPES.includes(contentType)) {
       throw createHttpError('Formato nao suportado. Use PNG, JPG ou WEBP.', 400, 'IARA_REFERENCE_INVALID_TYPE');
     }
-    const instructions = normalizeText(payload.instructions || payload.prompt).replace(/\s+/g, ' ');
+    const instructions = cleanMultiline(payload.instructions || payload.prompt);
     const keepText = payload.keepText === true || payload.keepText === 'true';
     if (instructions.length > PROMPT_MAX) {
       throw createHttpError(`Pedido muito longo (maximo ${PROMPT_MAX} caracteres).`, 400, 'IARA_IMAGE_PROMPT_TOO_LONG');
@@ -835,6 +881,7 @@ class MediaAssetService {
           instructions, style, background, keepText, transcribedText,
         }),
         extraParts: [referencePart],
+        ...(keepText ? { models: this.imageClient.getTextImageModelNames?.() } : {}),
         aspectRatio,
       },
       processing: { ...processing, darkFrame: true },

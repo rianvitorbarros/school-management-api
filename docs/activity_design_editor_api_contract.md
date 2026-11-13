@@ -101,8 +101,14 @@ Arquivar nao apaga o arquivo: atividades que ja usam a imagem continuam imprimin
 | DELETE | `/:assetId` | Arquiva (dono ou gestao) |
 | GET | `/:assetId/content` e `/:assetId/thumbnail` | Bytes da imagem/miniatura (passa pela API com o token) |
 | GET | `/ai/quota` | Limite diario da escola e estilos disponiveis |
-| POST | `/ai/generate` | `{ prompt, style: lineart|color|icon, count: 1-4, background?: transparent|scene }` |
+| POST | `/ai/generate` | `{ prompt (ate 4000), style: lineart|color|icon, count: 1-4, background?: transparent|scene }` |
 | POST | `/ai/generate-from-reference` | multipart: `file` (PNG/JPG/WEBP ate 8 MB), `instructions?` (ate 300), `style`, `count`, `background?`, `keepText?` (`true` mantem o titulo/enunciado da referencia) |
+
+Pedido longo (mais de 220 caracteres) ou com varias linhas e tratado como a descricao de uma folha inteira: o texto
+do professor manda, o estilo so acrescenta as regras de desenho (texto permitido, em portugues), a imagem sai em pe
+(2:3), o modelo de texto lista antes os textos que devem aparecer (titulo, legendas) e a geracao usa
+`IARA_IMAGE_TEXT_MODELS` (padrao `gemini-3-pro-image,gemini-2.5-flash-image`), que escreve melhor e custa mais. O mesmo
+modelo e usado em "manter o enunciado" da referencia. Desenhos simples continuam em `IARA_IMAGE_MODELS`.
 
 Fundo das imagens geradas:
 

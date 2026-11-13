@@ -83,11 +83,18 @@ function createHarness({ dailyAiLimit = 10, generate } = {}) {
     buildReferencePrompt: iaraImageClient.buildReferencePrompt,
     closestAspectRatio: iaraImageClient.closestAspectRatio,
     normalizeBackground: iaraImageClient.normalizeBackground,
+    buildDetailedPrompt: iaraImageClient.buildDetailedPrompt,
+    isDetailedRequest: iaraImageClient.isDetailedRequest,
     async transcribeReferenceText() {
       state.transcribeCalls = (state.transcribeCalls || 0) + 1;
       return 'VAMOS BRINCAR?\n1. Pinte a joaninha de vermelho.';
     },
-    async generateImage({ prompt, extraParts, aspectRatio }) {
+    getTextImageModelNames: () => ['texto-pro', 'rapido'],
+    async extractRequiredTexts() {
+      return ['PINTE A BONECA DE ACORDO COM A LEGENDA.', 'CÍRCULO'];
+    },
+    async generateImage({ prompt, extraParts, aspectRatio, models }) {
+      state.lastModels = models;
       state.generateCalls += 1;
       state.lastPrompt = prompt;
       state.lastExtraParts = extraParts;
@@ -291,6 +298,7 @@ test('generateFromReference recria o desenho sem cabecalho e com o pedido do pro
   assert.equal(state.lastAspectRatio, '2:3', 'segue a proporção da folha de referência');
   assert.match(state.lastPrompt, /Keep the activity title/, 'manter o enunciado');
   assert.equal(state.transcribeCalls, 1, 'enunciado lido uma vez pelo modelo de texto');
+  assert.deepEqual(state.lastModels, ['texto-pro', 'rapido']);
   assert.match(state.lastPrompt, /copy it letter by letter[\s\S]*VAMOS BRINCAR\?\n1\. Pinte a joaninha de vermelho\./);
   assert.match(state.lastPrompt, /never duplicate, split or add lines/);
   assert.match(state.lastPrompt, /perfectly horizontal and left-aligned/);
@@ -371,6 +379,45 @@ test('processador real: sem fundo remove so o branco das bordas e preserva o bra
   const reference = await defaultImageProcessor.prepareReference(canvas.toBuffer('image/png'), 30);
   assert.equal(reference.mimeType, 'image/jpeg');
   assert.equal(reference.width, 30);
+});
+
+test('generateWithAi aceita a descricao de uma folha inteira (prompt longo)', async () => {
+  const { service, state, teacher } = createHarness();
+  const prompt = [
+    'Crie uma atividade pedagógica infantil em formato A4 vertical, com desenhos em preto e branco.',
+    'Título da atividade:',
+    'PINTE A BONECA DE ACORDO COM A LEGENDA.',
+    '1. Legenda de cores',
+    '* CÍRCULO — vermelho.',
+    '* QUADRADO — amarelo.',
+    '* TRIÂNGULO — azul.',
+    '* RETÂNGULO — verde.',
+    '2. Desenho principal — Boneca geométrica',
+    'Cabeça grande e redonda, vestido em formato de triângulo, braços e pernas retangulares.',
+    'x'.repeat(2500),
+  ].join('\n');
+  const result = await service.generateWithAi(teacher, { prompt, style: 'lineart', count: 1 });
+  assert.equal(result.items.length, 1);
+  assert.equal(result.items[0].title, 'PINTE A BONECA DE ACORDO COM A LEGENDA.');
+  assert.equal(state.lastAspectRatio, '2:3', 'folha em pé');
+  assert.match(state.lastPrompt, /follows the teacher's detailed request/);
+  assert.match(state.lastPrompt, /Brazilian Portuguese with correct spelling/);
+  assert.match(state.lastPrompt, /\* CÍRCULO — vermelho\.\n\* QUADRADO — amarelo\./, 'quebras de linha preservadas');
+  assert.doesNotMatch(state.lastPrompt, /no letters/, 'texto é permitido');
+  assert.match(state.lastPrompt, /exactly these texts[\s\S]*"PINTE A BONECA DE ACORDO COM A LEGENDA\." \| "CÍRCULO"/);
+  assert.match(state.lastPrompt, /Do not draw a border or frame around the whole page/);
+  assert.deepEqual(state.lastModels, ['texto-pro', 'rapido'], 'modelo que escreve melhor');
+
+  await assert.rejects(
+    () => service.generateWithAi(teacher, { prompt: 'a'.repeat(4001), style: 'lineart', count: 1 }),
+    (error) => error.code === 'IARA_IMAGE_PROMPT_TOO_LONG'
+  );
+
+  // Pedido curto continua no modo de sempre (um desenho só, quadrado).
+  await service.generateWithAi(teacher, { prompt: 'um elefante feliz', style: 'lineart', count: 1 });
+  assert.equal(state.lastAspectRatio, undefined);
+  assert.match(state.lastPrompt, /no letters/);
+  assert.equal(state.lastModels, undefined, 'desenho simples usa o modelo de sempre');
 });
 
 test('generateWithAi respeita o limite diario da escola', async () => {
@@ -488,6 +535,34 @@ test('iaraImage: resposta sem imagem por motivo que nao e seguranca tenta de nov
     (error) => error.code === 'IARA_IMAGE_BLOCKED'
   );
   assert.equal(safetyCalls, 1);
+});
+
+test('iaraImage: lista os textos do pedido e usa a lista de modelos indicada', async () => {
+  const texts = await iaraImageClient.extractRequiredTexts({
+    request: 'Título: PINTE A BONECA',
+    apiKey: 'k',
+    httpClient: { async post() { return { data: { candidates: [{ content: { parts: [{ text: '["PINTE A BONECA","CÍRCULO"]' }] } }] } }; } },
+  });
+  assert.deepEqual(texts, ['PINTE A BONECA', 'CÍRCULO']);
+  const broken = await iaraImageClient.extractRequiredTexts({
+    request: 'x', apiKey: 'k', httpClient: { async post() { return { data: { candidates: [{ content: { parts: [{ text: 'nao e json' }] } }] } }; } },
+  });
+  assert.deepEqual(broken, []);
+
+  const used = [];
+  await iaraImageClient.generateImage({
+    prompt: 'x',
+    apiKey: 'k',
+    models: ['modelo-texto'],
+    httpClient: {
+      async post(url) {
+        used.push(url);
+        return { data: { candidates: [{ content: { parts: [{ inlineData: { data: PNG_BYTES.toString('base64') } }] } }] } };
+      },
+    },
+  });
+  assert.match(used[0], /modelo-texto:generateContent/);
+  assert.deepEqual(iaraImageClient.getTextImageModelNames(), ['gemini-3-pro-image', 'gemini-2.5-flash-image']);
 });
 
 test('iaraImage: transcreve o enunciado da referencia com o modelo de texto', async () => {
