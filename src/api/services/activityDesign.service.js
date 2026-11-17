@@ -279,6 +279,7 @@ class ActivityDesignService {
     ActivityPage = ActivityPageModel,
     r2StorageService = r2StorageServiceInstance,
     mediaAssetService = null,
+    examService = null,
     thumbnailMaker = null,
     now = () => new Date(),
   } = {}) {
@@ -287,6 +288,7 @@ class ActivityDesignService {
     this.ActivityPage = ActivityPage;
     this.r2StorageService = r2StorageService;
     this.mediaAssetServiceOverride = mediaAssetService;
+    this.examServiceOverride = examService;
     this.thumbnailMaker = thumbnailMaker || ((buffer) => this.makeThumbnail(buffer));
     this.now = now;
   }
@@ -295,6 +297,85 @@ class ActivityDesignService {
     // Carregado sob demanda para evitar dependencia circular nos testes.
     // eslint-disable-next-line global-require
     return this.mediaAssetServiceOverride || require('./mediaAsset.service');
+  }
+
+  get examService() {
+    // eslint-disable-next-line global-require
+    return this.examServiceOverride || require('./exam.service');
+  }
+
+  // ------------------------------------------------ avaliacao (modo Canva)
+
+  async loadAssessment(designId, actor) {
+    const context = await this.loadDesign(designId, actor, { forWrite: true });
+    if (context.design.purpose !== 'assessment') {
+      throw createHttpError('Esta atividade nao e uma avaliacao.', 400, 'DESIGN_NOT_ASSESSMENT');
+    }
+    if (!context.design.classId) {
+      throw createHttpError('Informe a turma da avaliacao.', 400, 'DESIGN_CLASS_REQUIRED');
+    }
+    return context;
+  }
+
+  /**
+   * Garante a prova (lancamento direto) que guarda as notas da avaliacao e
+   * a mantem igual ao design (titulo, disciplina, valor e bimestre).
+   */
+  async ensureAssessmentExam(designId, actor, payload = {}) {
+    const { design, schoolId, actorId } = await this.loadAssessment(designId, actor);
+    const subjectId = normalizeText(payload.subjectId);
+    if (!mongoose.Types.ObjectId.isValid(subjectId)) {
+      throw createHttpError('Informe a disciplina da avaliacao.', 400, 'SUBJECT_REQUIRED');
+    }
+    if (payload.maxScore !== undefined) this.applyMetadata(design, { maxScore: payload.maxScore });
+    const termId = normalizeText(payload.termId);
+    const data = {
+      title: design.title,
+      subject_id: subjectId,
+      totalValue: Number(design.maxScore || 10),
+      ...(mongoose.Types.ObjectId.isValid(termId) ? { termId } : {}),
+    };
+
+    let exam = null;
+    if (design.examId) {
+      try {
+        exam = await this.examService.updateExam(String(design.examId), data, schoolId);
+      } catch (_) {
+        exam = null;
+      }
+    }
+    if (!exam) {
+      exam = await this.examService.createExam({
+        ...data,
+        class_id: design.classId,
+        teacher_id: design.createdByUserId || actorId,
+        applicationDate: payload.applicationDate ? new Date(payload.applicationDate) : this.now(),
+        correctionType: 'DIRECT_GRADE',
+        questions: [],
+        status: 'READY',
+        activityDesignId: design._id,
+      }, schoolId);
+      design.examId = exam._id;
+    }
+    design.updatedByUserId = actorId;
+    await design.save();
+    return { design: this.serialize(design), examId: String(exam._id) };
+  }
+
+  async getAssessmentGrades(designId, actor) {
+    const { design, schoolId } = await this.loadAssessment(designId, actor);
+    if (!design.examId) {
+      return { examId: null, maxScore: Number(design.maxScore || 10), students: [] };
+    }
+    return this.examService.getDirectGrades(String(design.examId), schoolId);
+  }
+
+  async saveAssessmentGrades(designId, actor, payload = {}) {
+    const { design, schoolId } = await this.loadAssessment(designId, actor);
+    if (!design.examId) {
+      throw createHttpError('Escolha a disciplina antes de lancar as notas.', 400, 'ASSESSMENT_EXAM_REQUIRED');
+    }
+    return this.examService.saveDirectGrades(String(design.examId), schoolId, payload.grades || []);
   }
 
   getEditorConfig() {
@@ -386,6 +467,9 @@ class ActivityDesignService {
       publishedAt: plain.publishedAt || null,
       publishedPageKeys: Array.isArray(plain.publishedPageKeys) ? plain.publishedPageKeys : [],
       importedFromDesignId: plain.importedFromDesignId ? String(plain.importedFromDesignId) : null,
+      purpose: plain.purpose === 'assessment' ? 'assessment' : 'activity',
+      examId: plain.examId ? String(plain.examId) : null,
+      maxScore: Number.isFinite(Number(plain.maxScore)) ? Number(plain.maxScore) : 10,
       createdAt: plain.createdAt || null,
       updatedAt: plain.updatedAt || null,
     };
@@ -467,6 +551,16 @@ class ActivityDesignService {
       }
     }
     if (payload.tags !== undefined) design.tags = normalizeTags(payload.tags);
+    if (payload.purpose !== undefined) {
+      design.purpose = payload.purpose === 'assessment' ? 'assessment' : 'activity';
+    }
+    if (payload.maxScore !== undefined && payload.maxScore !== null && payload.maxScore !== '') {
+      const maxScore = Number(payload.maxScore);
+      if (!Number.isFinite(maxScore) || maxScore <= 0 || maxScore > 100) {
+        throw createHttpError('Valor da avaliacao invalido.', 400, 'INVALID_MAX_SCORE');
+      }
+      design.maxScore = maxScore;
+    }
     if (payload.classId !== undefined) {
       const classId = normalizeText(payload.classId);
       design.classId = classId && mongoose.Types.ObjectId.isValid(classId) ? classId : null;
@@ -561,6 +655,8 @@ class ActivityDesignService {
       segment: source.segment || '',
       grade: source.grade || '',
       tags: source.tags || [],
+      purpose: source.purpose === 'assessment' ? 'assessment' : 'activity',
+      maxScore: source.maxScore ?? 10,
       headerHeightPct: source.headerHeightPct,
       footerHeightPct: source.footerHeightPct,
       // A copia reaproveita os mesmos arquivos de imagem (as chaves no R2

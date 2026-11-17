@@ -78,6 +78,10 @@ const examSchema = new Schema({
         omrLayout: { type: Schema.Types.Mixed, default: null }
     },
 
+    // Avaliação feita no editor (modo Canva): a prova guarda as notas
+    // (folhas sem questões, lançamento direto) para o Diário e o boletim.
+    activityDesignId: { type: Schema.Types.ObjectId, ref: 'ActivityDesign', default: null, index: true },
+
     reusedFromExamId: { type: Schema.Types.ObjectId, ref: 'Exam', default: null },
     reusedFromClassId: { type: Schema.Types.ObjectId, ref: 'Class', default: null },
     reusedAt: { type: Date, default: null },

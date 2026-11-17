@@ -892,10 +892,36 @@ class ExamService {
      * nota da correção aparecer no Diário e no app dos responsáveis.
      * Falhas não impedem salvar a prova, mas ficam registradas no log.
      */
+    /**
+     * Bimestre da avaliação no Diário: o da própria prova quando ela tem um
+     * (senão cairia em "Extra/Recuperação" se a data não estiver nos
+     * bimestres do ano letivo).
+     */
+    async _gradebookTermInfo(exam, schoolId) {
+        const termInfo = await SchoolYearService.findTermByDate(schoolId, exam.applicationDate);
+        const termId = getObjectIdString(exam.termId);
+        if (termId && mongoose.Types.ObjectId.isValid(termId)) {
+            try {
+                const period = await Periodo.findOne({ _id: termId, school_id: schoolId })
+                    .select('titulo anoLetivoId')
+                    .lean();
+                if (period?.titulo) {
+                    return {
+                        termName: period.titulo,
+                        schoolYearId: period.anoLetivoId || termInfo.schoolYearId,
+                    };
+                }
+            } catch (_) {
+                // usa a data
+            }
+        }
+        return termInfo;
+    }
+
     async _ensureGradebookEvaluation(exam, schoolId) {
         if (!exam || getObjectIdString(exam.settings?.evaluationId)) return exam;
         try {
-            const termInfo = await SchoolYearService.findTermByDate(schoolId, exam.applicationDate);
+            const termInfo = await this._gradebookTermInfo(exam, schoolId);
             const evaluation = await Evaluation.create({
                 school: schoolId,
                 classInfo: exam.class_id?._id || exam.class_id,
@@ -926,7 +952,7 @@ class ExamService {
         const evaluationId = getObjectIdString(exam?.settings?.evaluationId);
         if (!evaluationId) return;
         try {
-            const termInfo = await SchoolYearService.findTermByDate(schoolId, exam.applicationDate);
+            const termInfo = await this._gradebookTermInfo(exam, schoolId);
             await Evaluation.updateOne(
                 { _id: evaluationId, school: schoolId },
                 {
@@ -1940,5 +1966,97 @@ class ExamService {
         return sheet;
     }
 }
+
+ExamService.prototype.getDirectGrades = async function getDirectGrades(examId, schoolId) {
+    const exam = await Exam.findOne({ _id: examId, school_id: schoolId })
+        .select('_id class_id totalValue title status')
+        .lean();
+    if (!exam) throw createHttpError('Prova nao encontrada.', 404);
+
+    const [enrollments, sheets] = await Promise.all([
+        Enrollment.find({ school_id: schoolId, class: exam.class_id, status: 'Ativa' })
+            .populate('student', 'fullName name')
+            .select('_id student')
+            .lean(),
+        ExamSheet.find({ school_id: schoolId, exam_id: exam._id })
+            .select('student_id grade status')
+            .lean(),
+    ]);
+    const gradeByStudent = new Map(
+        sheets.map((sheet) => [getObjectIdString(sheet.student_id), sheet])
+    );
+    const students = enrollments
+        .filter((enrollment) => enrollment.student)
+        .map((enrollment) => {
+            const studentId = getObjectIdString(enrollment.student);
+            const sheet = gradeByStudent.get(studentId);
+            return {
+                studentId,
+                enrollmentId: getObjectIdString(enrollment._id),
+                name: enrollment.student.fullName || enrollment.student.name || 'Aluno',
+                grade: this._finiteNumber(sheet?.grade),
+            };
+        })
+        .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
+
+    return {
+        examId: getObjectIdString(exam._id),
+        maxScore: this._finiteNumber(exam.totalValue) ?? 10,
+        status: exam.status,
+        students,
+    };
+};
+
+/**
+ * Lançamento direto (avaliação sem folha de respostas): grava a nota de
+ * cada aluno na folha dele e no Diário. Nota vazia não altera nada.
+ */
+ExamService.prototype.saveDirectGrades = async function saveDirectGrades(examId, schoolId, grades = []) {
+    const exam = await Exam.findOne({ _id: examId, school_id: schoolId });
+    if (!exam) throw createHttpError('Prova nao encontrada.', 404);
+    const maxScore = this._finiteNumber(exam.totalValue) ?? 10;
+    if (!Array.isArray(grades)) throw createHttpError('Notas invalidas.', 400);
+
+    const enrollments = await Enrollment.find({
+        school_id: schoolId,
+        class: exam.class_id,
+        status: 'Ativa',
+    }).select('student').lean();
+    const enrolled = new Set(enrollments.map((item) => getObjectIdString(item.student)));
+
+    let saved = 0;
+    for (const entry of grades) {
+        const studentId = getObjectIdString(entry?.studentId);
+        if (!studentId || !enrolled.has(studentId)) continue;
+        if (entry.grade === null || entry.grade === undefined || entry.grade === '') continue;
+        const value = Number(entry.grade);
+        if (!Number.isFinite(value) || value < 0 || value > maxScore) {
+            throw createHttpError(`Nota invalida (use de 0 a ${maxScore}).`, 400);
+        }
+        let sheet = await ExamSheet.findOne({ school_id: schoolId, exam_id: exam._id, student_id: studentId });
+        if (!sheet) {
+            sheet = new ExamSheet({
+                school_id: schoolId,
+                exam_id: exam._id,
+                student_id: studentId,
+                qr_code_uuid: crypto.randomUUID(),
+            });
+        }
+        sheet.grade = value;
+        sheet.objectiveGrade = value;
+        sheet.maxGrade = maxScore;
+        sheet.status = 'SCANNED';
+        await sheet.save();
+        await this._syncSheetGradeToGradebook(exam, sheet, schoolId, value);
+        saved += 1;
+    }
+
+    if (saved > 0 && exam.status !== 'GRADED') {
+        exam.status = 'GRADED';
+        await exam.save();
+    }
+    const result = await this.getDirectGrades(examId, schoolId);
+    return { ...result, saved };
+};
 
 module.exports = new ExamService();

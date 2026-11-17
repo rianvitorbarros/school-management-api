@@ -128,6 +128,12 @@ const activityDesignSchema = new Schema(
       index: true,
     },
     publishedAt: { type: Date, default: null },
+    // 'assessment' = avaliacao (vai para o Diario e o boletim);
+    // 'activity' = atividade livre.
+    purpose: { type: String, enum: ['activity', 'assessment'], default: 'activity', index: true },
+    // Prova que guarda as notas da avaliacao (lancamento direto).
+    examId: { type: Schema.Types.ObjectId, ref: 'Exam', default: null },
+    maxScore: { type: Number, min: 0, max: 100, default: 10 },
     // Paginas escolhidas na ultima publicacao (vazio = todas).
     publishedPageKeys: { type: [String], default: [] },
     // Atividade de origem quando importada de outra turma.

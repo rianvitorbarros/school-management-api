@@ -87,6 +87,22 @@ router.post('/:designId/duplicate', handle(
   201
 ));
 
+// Avaliacao do modo Canva: prova de notas, lancamento e consulta.
+router.post('/:designId/assessment', handle(
+  (req) => activityDesignService.ensureAssessmentExam(req.params.designId, req.user, req.body || {}),
+  'Erro ao preparar a avaliacao.'
+));
+
+router.get('/:designId/assessment/grades', handle(
+  (req) => activityDesignService.getAssessmentGrades(req.params.designId, req.user),
+  'Erro ao carregar as notas.'
+));
+
+router.put('/:designId/assessment/grades', handle(
+  (req) => activityDesignService.saveAssessmentGrades(req.params.designId, req.user, req.body || {}),
+  'Erro ao salvar as notas.'
+));
+
 router.delete('/:designId', handle(
   (req) => activityDesignService.archiveDesign(req.params.designId, req.user),
   'Erro ao arquivar atividade.'
