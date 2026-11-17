@@ -257,6 +257,21 @@ function blankPage() {
   return { pageKey: crypto.randomUUID(), background: '#FFFFFF', elements: [] };
 }
 
+function parsePageKeys(value) {
+  if (value === undefined || value === null || value === '') return null;
+  let list = value;
+  if (typeof value === 'string') {
+    try {
+      list = JSON.parse(value);
+    } catch (_) {
+      list = value.split(',');
+    }
+  }
+  if (!Array.isArray(list)) return null;
+  const keys = [...new Set(list.map((key) => normalizeText(key)).filter(Boolean))];
+  return keys.length > 0 ? keys : null;
+}
+
 class ActivityDesignService {
   constructor({
     ActivityDesign = ActivityDesignModel,
@@ -369,6 +384,8 @@ class ActivityDesignService {
       hasUnpublishedChanges: plain.status === 'published' && publishedRevision !== revision,
       publishedBookId: plain.publishedBookId ? String(plain.publishedBookId) : null,
       publishedAt: plain.publishedAt || null,
+      publishedPageKeys: Array.isArray(plain.publishedPageKeys) ? plain.publishedPageKeys : [],
+      importedFromDesignId: plain.importedFromDesignId ? String(plain.importedFromDesignId) : null,
       createdAt: plain.createdAt || null,
       updatedAt: plain.updatedAt || null,
     };
@@ -520,15 +537,25 @@ class ActivityDesignService {
     return this.serialize(design);
   }
 
-  async duplicateDesign(designId, actor) {
+  /**
+   * Copia a atividade. Com `classId`, importa para outra turma: a copia vai
+   * para aquela turma com o mesmo titulo.
+   */
+  async duplicateDesign(designId, actor, options = {}) {
     const { design, schoolId, actorId } = await this.loadDesign(designId, actor);
     const source = typeof design.toObject === 'function' ? design.toObject({ minimize: false }) : design;
+    const targetClassId = normalizeText(options.classId);
+    const importing = Boolean(targetClassId);
+    if (importing && !mongoose.Types.ObjectId.isValid(targetClassId)) {
+      throw createHttpError('Turma de destino invalida.', 400, 'INVALID_CLASS_ID');
+    }
     const copy = new this.ActivityDesign({
       schoolId,
       createdByUserId: actorId,
       updatedByUserId: actorId,
-      classId: source.classId || null,
-      title: `${source.title} (copia)`.slice(0, 160),
+      classId: importing ? targetClassId : (source.classId || null),
+      importedFromDesignId: importing ? source._id : null,
+      title: (importing ? source.title : `${source.title} (copia)`).slice(0, 160),
       description: source.description || '',
       subject: source.subject || '',
       segment: source.segment || '',
@@ -675,7 +702,7 @@ class ActivityDesignService {
    * `design.pages`), sobe para o R2 e cria/atualiza o ActivityBook da escola
    * com uma ActivityPage `sourceKind: 'image'` por pagina.
    */
-  async publishDesign(designId, actor, { files = [], revision } = {}) {
+  async publishDesign(designId, actor, { files = [], revision, pageKeys } = {}) {
     const { design, schoolId, actorId } = await this.loadDesign(designId, actor, { forWrite: true });
 
     if (revision !== undefined && revision !== null && revision !== '') {
@@ -688,9 +715,20 @@ class ActivityDesignService {
       }
     }
 
-    const pages = design.pages || [];
-    if (pages.length === 0) {
+    const allPages = design.pages || [];
+    if (allPages.length === 0) {
       throw createHttpError('A atividade nao tem paginas.', 400, 'INVALID_DESIGN_PAGES');
+    }
+    // O professor pode escolher quais paginas publicar (ex.: atividade
+    // importada de outra turma da qual so parte sera usada).
+    const selectedKeys = parsePageKeys(pageKeys);
+    let pages = allPages;
+    if (selectedKeys) {
+      const wanted = new Set(selectedKeys);
+      pages = allPages.filter((page) => wanted.has(page.pageKey));
+      if (pages.length === 0 || pages.length !== wanted.size) {
+        throw createHttpError('Escolha ao menos uma pagina valida para publicar.', 400, 'INVALID_PUBLISH_PAGES');
+      }
     }
     if (!Array.isArray(files) || files.length !== pages.length) {
       throw createHttpError(
@@ -717,7 +755,7 @@ class ActivityDesignService {
     const nextRevision = Number(design.revision || 0);
     const designIdText = String(design._id);
     const basePrefix = `${STORAGE_BASE_PREFIX}/${schoolId}/activity-designs/${designIdText}/published/r${nextRevision}`;
-    const previousKeys = pages
+    const previousKeys = allPages
       .flatMap((page) => [page.renderedImageKey, page.renderedThumbnailKey])
       .filter(Boolean);
 
@@ -819,16 +857,21 @@ class ActivityDesignService {
       { $set: { enabled: false, printable: false, status: 'archived' } }
     );
 
-    design.pages = pages.map((page, index) => {
+    const uploadedByKey = new Map(pages.map((page, index) => [page.pageKey, uploaded[index]]));
+    design.pages = allPages.map((page) => {
       const plainPage = typeof page.toObject === 'function' ? page.toObject({ minimize: false }) : page;
+      const item = uploadedByKey.get(plainPage.pageKey);
       return {
         ...plainPage,
-        renderedImageKey: uploaded[index].imageKey,
-        renderedImageContentType: uploaded[index].contentType,
-        renderedThumbnailKey: uploaded[index].thumbnailKey,
-        renderedAt: this.now(),
+        renderedImageKey: item ? item.imageKey : '',
+        renderedImageContentType: item ? item.contentType : '',
+        renderedThumbnailKey: item ? item.thumbnailKey : '',
+        renderedAt: item ? this.now() : null,
       };
     });
+    design.publishedPageKeys = selectedKeys && pages.length < allPages.length
+      ? pages.map((page) => page.pageKey)
+      : [];
     if (typeof design.markModified === 'function') design.markModified('pages');
     design.status = 'published';
     design.publishedRevision = nextRevision;

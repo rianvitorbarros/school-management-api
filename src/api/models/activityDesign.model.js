@@ -128,6 +128,10 @@ const activityDesignSchema = new Schema(
       index: true,
     },
     publishedAt: { type: Date, default: null },
+    // Paginas escolhidas na ultima publicacao (vazio = todas).
+    publishedPageKeys: { type: [String], default: [] },
+    // Atividade de origem quando importada de outra turma.
+    importedFromDesignId: { type: Schema.Types.ObjectId, ref: 'ActivityDesign', default: null },
     archivedAt: { type: Date, default: null },
   },
   { timestamps: true, minimize: false }
