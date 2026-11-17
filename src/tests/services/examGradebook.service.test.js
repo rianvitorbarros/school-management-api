@@ -204,3 +204,79 @@ test('editar a prova atualiza título, data e valor da avaliação do Diário', 
   assert.equal(updates[0].update.$set.maxScore, 8);
   assert.equal(updates[0].update.$set.term, '4º Bimestre');
 });
+
+test('avaliação no Diário usa o bimestre da prova, não "Extra/Recuperação"', async () => {
+  const Periodo = require('../../api/models/periodo.model');
+  const termId = oid();
+  const exam = buildExam({ termId });
+  const created = [];
+
+  await withStubs([
+    [SchoolYearService, 'findTermByDate', async () => ({ termName: 'Extra/Recuperação', schoolYearId: oid() })],
+    [Periodo, 'findOne', () => ({
+      select() { return this; },
+      lean: async () => ({ _id: termId, titulo: '4º Bimestre', anoLetivoId: oid() }),
+    })],
+    [Evaluation, 'create', async (doc) => { created.push(doc); return { _id: oid() }; }],
+  ], async () => {
+    await examService._ensureGradebookEvaluation(exam, exam.school_id);
+  });
+
+  assert.equal(created[0].term, '4º Bimestre');
+});
+
+test('lançamento direto grava a nota na folha e no Diário e marca a prova como corrigida', async () => {
+  const ExamSheet = require('../../api/models/exam-sheet.model');
+  const evaluationId = oid();
+  const exam = buildExam({ settings: { evaluationId }, totalValue: 10, status: 'READY' });
+  const studentA = oid();
+  const studentB = oid();
+  const outsider = oid();
+  const savedSheets = [];
+  const gradebook = [];
+
+  await withStubs([
+    [Exam, 'findOne', (query) => {
+      const result = exam;
+      return {
+        select() { return this; },
+        lean: async () => result,
+        then: (resolve, reject) => Promise.resolve(result).then(resolve, reject),
+      };
+    }],
+    [Enrollment, 'find', () => ({
+      populate() { return this; },
+      select() { return this; },
+      lean: async () => [
+        { _id: oid(), student: { _id: studentA, fullName: 'Ana' } },
+        { _id: oid(), student: { _id: studentB, fullName: 'Bruno' } },
+      ],
+    })],
+    [ExamSheet, 'findOne', async () => null],
+    [ExamSheet, 'find', () => ({
+      select() { return this; },
+      lean: async () => savedSheets,
+    })],
+    [ExamSheet.prototype, 'save', async function save() { savedSheets.push(this); return this; }],
+    [examService, '_syncSheetGradeToGradebook', async (_exam, sheet, _school, value) => {
+      gradebook.push([String(sheet.student_id), value]);
+    }],
+  ], async () => {
+    await assert.rejects(
+      examService.saveDirectGrades(exam._id, exam.school_id, [{ studentId: studentA, grade: 11 }]),
+      /de 0 a 10/
+    );
+    const result = await examService.saveDirectGrades(exam._id, exam.school_id, [
+      { studentId: studentA, grade: 8.5 },
+      { studentId: studentB, grade: null },
+      { studentId: outsider, grade: 7 },
+    ]);
+    assert.equal(result.saved, 1);
+    assert.equal(result.students.find((s) => s.name === 'Ana').grade, 8.5);
+    assert.equal(result.students.find((s) => s.name === 'Bruno').grade, null);
+  });
+
+  assert.deepEqual(gradebook, [[String(studentA), 8.5]]);
+  assert.equal(savedSheets[0].status, 'SCANNED');
+  assert.equal(exam.status, 'GRADED');
+});

@@ -474,3 +474,61 @@ test('duplicateDesign com classId importa para outra turma com o mesmo titulo', 
     (error) => error.code === 'INVALID_CLASS_ID'
   );
 });
+
+test('avaliacao Canva: cria a prova de notas uma vez e repassa o lancamento', async () => {
+  const calls = { create: [], update: [], save: [] };
+  const examId = new mongoose.Types.ObjectId();
+  const fakeExamService = {
+    async createExam(data) { calls.create.push(data); return { _id: examId }; },
+    async updateExam(id, data) { calls.update.push([id, data]); return { _id: examId }; },
+    async getDirectGrades(id) { return { examId: id, maxScore: 10, students: [] }; },
+    async saveDirectGrades(id, _school, grades) { calls.save.push([id, grades]); return { saved: grades.length }; },
+  };
+  const { service, teacher } = createHarness();
+  service.examServiceOverride = fakeExamService;
+  const subjectId = String(new mongoose.Types.ObjectId());
+
+  const activity = await service.createDesign(teacher, { title: 'Atividade', classId: '64b000000000000000000001' });
+  await assert.rejects(
+    service.ensureAssessmentExam(activity.id, teacher, { subjectId }),
+    (error) => error.code === 'DESIGN_NOT_ASSESSMENT'
+  );
+
+  const created = await service.createDesign(teacher, {
+    title: 'Avaliacao das cores',
+    purpose: 'assessment',
+    maxScore: 7,
+    classId: '64b000000000000000000001',
+  });
+  assert.equal(created.purpose, 'assessment');
+  assert.equal(created.maxScore, 7);
+
+  await assert.rejects(
+    service.saveAssessmentGrades(created.id, teacher, { grades: [] }),
+    (error) => error.code === 'ASSESSMENT_EXAM_REQUIRED'
+  );
+  await assert.rejects(
+    service.ensureAssessmentExam(created.id, teacher, {}),
+    (error) => error.code === 'SUBJECT_REQUIRED'
+  );
+
+  const first = await service.ensureAssessmentExam(created.id, teacher, { subjectId });
+  assert.equal(first.examId, String(examId));
+  assert.equal(first.design.examId, String(examId));
+  assert.equal(calls.create.length, 1);
+  assert.equal(calls.create[0].correctionType, 'DIRECT_GRADE');
+  assert.equal(calls.create[0].totalValue, 7);
+  assert.equal(String(calls.create[0].activityDesignId), created.id);
+
+  await service.ensureAssessmentExam(created.id, teacher, { subjectId, maxScore: 10 });
+  assert.equal(calls.create.length, 1, 'nao cria outra prova');
+  assert.equal(calls.update[0][1].totalValue, 10);
+
+  const grades = [{ studentId: 's1', grade: 9 }];
+  await service.saveAssessmentGrades(created.id, teacher, { grades });
+  assert.deepEqual(calls.save[0], [String(examId), grades]);
+
+  const copy = await service.duplicateDesign(created.id, teacher, { classId: '64b000000000000000000002' });
+  assert.equal(copy.purpose, 'assessment');
+  assert.equal(copy.examId, null, 'a copia ganha a propria prova de notas');
+});
