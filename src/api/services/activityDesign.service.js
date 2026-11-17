@@ -625,7 +625,12 @@ class ActivityDesignService {
       if (typeof design.markModified === 'function') design.markModified('pages');
     }
 
-    design.revision = Number(design.revision || 0) + 1;
+    // Trocar so o tipo (avaliacao/atividade) ou o valor nao muda a folha:
+    // nao conta como alteracao a publicar.
+    const metadataOnly = Object.keys(payload)
+      .filter((key) => key !== 'revision')
+      .every((key) => ['purpose', 'maxScore'].includes(key));
+    if (!metadataOnly) design.revision = Number(design.revision || 0) + 1;
     design.updatedByUserId = actorId;
     await design.save();
     return this.serialize(design);
