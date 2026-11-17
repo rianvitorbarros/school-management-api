@@ -62,6 +62,7 @@ const invoiceCompensationRoutes = require('./api/routes/invoiceCompensation.rout
 const guardianAuthRoutes = require('./api/routes/guardianAuth.routes.js');
 const reEnrollmentRoutes = require('./api/routes/reEnrollment.routes.js');
 const academicMonthlyFeePlanRoutes = require('./api/routes/academicMonthlyFeePlan.routes.js');
+const earlyPaymentOfferRoutes = require('./api/routes/earlyPaymentOffer.routes.js');
 
 const examRoutes = require('./api/routes/exam.routes.js');
 const omrRoutes = require('./api/routes/omr.routes.js');
@@ -104,6 +105,7 @@ app.use('/api/auth/student', authStudentRoutes);  // Login Aluno
 app.use('/api', guardianAuthRoutes);
 app.use('/api', reEnrollmentRoutes);
 app.use('/api', academicMonthlyFeePlanRoutes);
+app.use('/api', earlyPaymentOfferRoutes);
 
 // Funcionalidades Principais
 app.use('/api/schools', schoolRoutes);

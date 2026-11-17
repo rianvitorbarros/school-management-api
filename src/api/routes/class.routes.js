@@ -10,6 +10,7 @@ const classActivityController = require('../controllers/classActivity.controller
 router.post('/', authMiddleware.verifyToken, ClassController.create);
 router.get('/', authMiddleware.verifyToken, ClassController.getAll);
 router.get('/occupancy', authMiddleware.verifyToken, require('../controllers/classOccupancy.controller').get);
+router.post('/occupancy/plan', authMiddleware.verifyToken, require('../controllers/classOccupancy.controller').plan);
 router.get('/occupancy/:classId/students', authMiddleware.verifyToken, require('../controllers/classOccupancy.controller').get);
 router.post(
   '/:classId/activities',
