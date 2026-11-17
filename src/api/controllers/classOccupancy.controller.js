@@ -24,4 +24,12 @@ async function get(req, res) {
     }, rows: data.rows.map(({ confirmedStudents, pendingStudents, approvedStudents, ...row }) => row) });
   } catch (e) { return res.status(e.statusCode || 500).json({ message: e.statusCode ? e.message : 'Não foi possível consultar a ocupação. Tente novamente.' }); }
 }
-module.exports = { get, authorize };
+async function plan(req, res) {
+  const roles = [...(req.user?.roles || []), req.user?.role].filter(Boolean).map(r => String(r).toLowerCase());
+  if (!roles.some(r => ['admin', 'coordenador'].includes(r))) return res.status(403).json({ message: 'Somente administração e coordenação podem planejar turmas.' });
+  try {
+    const result = await require('../services/classPlanning.service').planClasses(req.user.school_id || req.user.schoolId, req.user.id || req.user._id, req.body || {});
+    return res.status(result.created.length ? 201 : 200).json(result);
+  } catch (e) { return res.status(e.statusCode || 500).json({ code: e.code || null, message: e.statusCode ? e.message : 'Não foi possível planejar as turmas. Tente novamente.' }); }
+}
+module.exports = { get, plan, authorize };
