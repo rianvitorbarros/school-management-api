@@ -398,3 +398,79 @@ test('attachLibraryAsset reaproveita a imagem do acervo sem reenviar e nao dupli
     (error) => error.status === 404
   );
 });
+
+test('publishDesign publica so as paginas escolhidas, na ordem do design', async () => {
+  const { service, state, teacher } = createHarness();
+  const created = await service.createDesign(teacher, { title: 'Importada' });
+  const saved = await service.updateDesign(created.id, teacher, {
+    pages: [
+      { pageKey: 'p1', elements: [] },
+      { pageKey: 'p2', elements: [textElement('t2')] },
+      { pageKey: 'p3', elements: [] },
+    ],
+  });
+
+  const result = await service.publishDesign(created.id, teacher, {
+    revision: saved.revision,
+    pageKeys: JSON.stringify(['p3', 'p1']),
+    files: [{ buffer: PNG_BYTES }, { buffer: JPG_BYTES }],
+  });
+
+  assert.equal(state.books[0].totalPages, 2);
+  assert.equal(result.activityPageIds.length, 2);
+  assert.deepEqual(result.design.publishedPageKeys, ['p1', 'p3']);
+  assert.equal(result.design.pages.length, 3, 'o design continua com todas as paginas');
+  assert.equal(result.design.pages[1].hasRenderedImage, false);
+  assert.equal(state.pages.find((page) => page.pageNumber === 2).sourceImageContentType, 'image/jpeg');
+
+  await assert.rejects(
+    service.publishDesign(created.id, teacher, {
+      revision: saved.revision,
+      pageKeys: ['x'],
+      files: [{ buffer: PNG_BYTES }],
+    }),
+    (error) => error.code === 'INVALID_PUBLISH_PAGES'
+  );
+  await assert.rejects(
+    service.publishDesign(created.id, teacher, {
+      revision: saved.revision,
+      pageKeys: ['p1', 'p2'],
+      files: [{ buffer: PNG_BYTES }],
+    }),
+    (error) => error.code === 'DESIGN_RENDER_COUNT_MISMATCH'
+  );
+
+  // Publicar tudo de novo limpa a escolha.
+  const all = await service.publishDesign(created.id, teacher, {
+    revision: saved.revision,
+    files: [{ buffer: PNG_BYTES }, { buffer: PNG_BYTES }, { buffer: PNG_BYTES }],
+  });
+  assert.deepEqual(all.design.publishedPageKeys, []);
+});
+
+test('duplicateDesign com classId importa para outra turma com o mesmo titulo', async () => {
+  const { service, teacher } = createHarness();
+  const created = await service.createDesign(teacher, {
+    title: 'Cores primarias',
+    classId: '64b000000000000000000001',
+  });
+  await service.updateDesign(created.id, teacher, {
+    pages: [{ pageKey: 'p1', elements: [textElement('t')] }, { pageKey: 'p2', elements: [] }],
+  });
+
+  const imported = await service.duplicateDesign(created.id, teacher, { classId: '64b000000000000000000002' });
+  assert.equal(imported.title, 'Cores primarias');
+  assert.equal(imported.classId, '64b000000000000000000002');
+  assert.equal(imported.importedFromDesignId, created.id);
+  assert.equal(imported.status, 'draft');
+  assert.equal(imported.pages.length, 2);
+
+  const copy = await service.duplicateDesign(created.id, teacher);
+  assert.equal(copy.title, 'Cores primarias (copia)');
+  assert.equal(copy.classId, '64b000000000000000000001');
+
+  await assert.rejects(
+    service.duplicateDesign(created.id, teacher, { classId: 'nao-e-id' }),
+    (error) => error.code === 'INVALID_CLASS_ID'
+  );
+});

@@ -82,7 +82,7 @@ router.put('/:designId', handle(
 ));
 
 router.post('/:designId/duplicate', handle(
-  (req) => activityDesignService.duplicateDesign(req.params.designId, req.user),
+  (req) => activityDesignService.duplicateDesign(req.params.designId, req.user, req.body || {}),
   'Erro ao duplicar atividade.',
   201
 ));
@@ -130,6 +130,7 @@ router.post('/:designId/publish', runUpload(publishUpload), handle(
   (req) => activityDesignService.publishDesign(req.params.designId, req.user, {
     files: req.files || [],
     revision: req.body?.revision,
+    pageKeys: req.body?.pageKeys,
   }),
   'Erro ao publicar atividade.'
 ));
