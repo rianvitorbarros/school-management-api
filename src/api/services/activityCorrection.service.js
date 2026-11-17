@@ -118,6 +118,7 @@ class ActivityCorrectionService {
     parseBusinessDateInputFn = parseBusinessDateInput,
     shiftBusinessDateFn = shiftBusinessDate,
     eventEmitter = appEmitter,
+    assessmentBridge = null,
   } = {}) {
     this.ActivityCorrectionModel = ActivityCorrectionModel;
     this.ActivityPrintRunModel = ActivityPrintRunModel;
@@ -131,6 +132,38 @@ class ActivityCorrectionService {
     this.parseBusinessDateInput = parseBusinessDateInputFn;
     this.shiftBusinessDate = shiftBusinessDateFn;
     this.eventEmitter = eventEmitter;
+    this.assessmentBridgeOverride = assessmentBridge;
+  }
+
+  get assessmentBridge() {
+    // eslint-disable-next-line global-require
+    return this.assessmentBridgeOverride || require('./activityAssessmentBridge.service');
+  }
+
+  /** Avaliação do modo Canva por trás desta folha (ou null). */
+  async assessmentContextFor(resolution) {
+    try {
+      return await this.assessmentBridge.contextFor({
+        activityBook: resolution.activityBook,
+        printRun: resolution.printRun,
+      });
+    } catch (error) {
+      console.warn('[ActivityCorrection] Falha ao identificar avaliacao', { message: error?.message });
+      return null;
+    }
+  }
+
+  async syncAssessment({ schoolId, actor, context, printRun, studentId, criteria }) {
+    if (!context) return null;
+    try {
+      return await this.assessmentBridge.sync({ schoolId, actor, context, printRun, studentId, criteria });
+    } catch (error) {
+      return {
+        ok: false,
+        destination: context.mode === 'developmental' ? 'boletim' : 'diario',
+        message: error?.message || 'Falha ao lancar a correcao.',
+      };
+    }
   }
 
   async resolveQr({ schoolId, actor = {}, qrCodePayload }) {
@@ -147,14 +180,18 @@ class ActivityCorrectionService {
       qrCodePayload: resolution.qrCodePayload,
     }).lean();
 
-    const criteriaTemplate = this.resolveCriteriaTemplate({
-      activityPage: resolution.activityPage,
-      activityBook: resolution.activityBook,
-      snapshot: resolution.printRun.snapshot,
-    });
+    const assessment = await this.assessmentContextFor(resolution);
+    const criteriaTemplate = assessment
+      ? assessment.template
+      : this.resolveCriteriaTemplate({
+        activityPage: resolution.activityPage,
+        activityBook: resolution.activityBook,
+        snapshot: resolution.printRun.snapshot,
+      });
 
     return {
       type: 'activity',
+      assessment: this.assessmentBridge.describe(assessment),
       activity: {
         activityPrintRunId: toStringId(resolution.printRun._id),
         qrCodePayload: resolution.qrCodePayload,
@@ -219,11 +256,14 @@ class ActivityCorrectionService {
       );
     }
 
-    const criteriaTemplate = this.resolveCriteriaTemplate({
-      activityPage: resolution.activityPage,
-      activityBook: resolution.activityBook,
-      snapshot: resolution.printRun.snapshot,
-    });
+    const assessment = await this.assessmentContextFor(resolution);
+    const criteriaTemplate = assessment
+      ? assessment.template
+      : this.resolveCriteriaTemplate({
+        activityPage: resolution.activityPage,
+        activityBook: resolution.activityBook,
+        snapshot: resolution.printRun.snapshot,
+      });
     const normalizedCriteria = this.validateCriteriaPayload(
       payload.criteria,
       criteriaTemplate
@@ -260,7 +300,19 @@ class ActivityCorrectionService {
         correction,
       });
 
-      return { correction: this.serializeCorrection(correction) };
+      const gradebook = await this.syncAssessment({
+        schoolId,
+        actor,
+        context: assessment,
+        printRun: resolution.printRun,
+        studentId: resolution.item.studentId,
+        criteria: normalizedCriteria,
+      });
+
+      return {
+        correction: this.serializeCorrection(correction),
+        ...(gradebook ? { gradebook } : {}),
+      };
     } catch (error) {
       if (error?.code === 11000) {
         throw createHttpError(
@@ -295,12 +347,21 @@ class ActivityCorrectionService {
       ? await this.ActivityBookModel.findById(correction.activityBookId).lean()
       : null;
 
-    const criteriaTemplate = this.resolveCriteriaTemplate({
-      activityPage,
+    const printRun = correction.activityPrintRunId && this.ActivityPrintRunModel.findById
+      ? await this.ActivityPrintRunModel.findById(correction.activityPrintRunId).lean()
+      : null;
+    const assessment = await this.assessmentContextFor({
       activityBook,
-      snapshot: correction.snapshot,
-      fallbackTemplate: correction.criteriaTemplateSnapshot,
+      printRun: printRun || { classId: correction.classId },
     });
+    const criteriaTemplate = assessment
+      ? assessment.template
+      : this.resolveCriteriaTemplate({
+        activityPage,
+        activityBook,
+        snapshot: correction.snapshot,
+        fallbackTemplate: correction.criteriaTemplateSnapshot,
+      });
 
     if (Object.prototype.hasOwnProperty.call(payload, 'criteria')) {
       correction.criteria = this.validateCriteriaPayload(payload.criteria, criteriaTemplate);
@@ -326,7 +387,21 @@ class ActivityCorrectionService {
       correction,
     });
 
-    return { correction: this.serializeCorrection(correction) };
+    const gradebook = Object.prototype.hasOwnProperty.call(payload, 'criteria')
+      ? await this.syncAssessment({
+        schoolId,
+        actor,
+        context: assessment,
+        printRun: printRun || { classId: correction.classId, printDate: correction.printDate },
+        studentId: correction.studentId,
+        criteria: correction.criteria,
+      })
+      : null;
+
+    return {
+      correction: this.serializeCorrection(correction),
+      ...(gradebook ? { gradebook } : {}),
+    };
   }
 
   async listPrintRunsForCorrection({ schoolId, actor = {}, filters = {} }) {

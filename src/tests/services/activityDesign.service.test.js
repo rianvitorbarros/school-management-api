@@ -532,3 +532,14 @@ test('avaliacao Canva: cria a prova de notas uma vez e repassa o lancamento', as
   assert.equal(copy.purpose, 'assessment');
   assert.equal(copy.examId, null, 'a copia ganha a propria prova de notas');
 });
+
+test('trocar so o tipo nao marca alteracoes a publicar', async () => {
+  const { service, teacher } = createHarness();
+  const created = await service.createDesign(teacher, { title: 'A' });
+  const saved = await service.updateDesign(created.id, teacher, { pages: [{ pageKey: 'p1', elements: [] }] });
+  await service.publishDesign(created.id, teacher, { revision: saved.revision, files: [{ buffer: PNG_BYTES }] });
+  const changed = await service.updateDesign(created.id, teacher, { purpose: 'assessment' });
+  assert.equal(changed.purpose, 'assessment');
+  assert.equal(changed.revision, saved.revision);
+  assert.equal(changed.hasUnpublishedChanges, false);
+});
