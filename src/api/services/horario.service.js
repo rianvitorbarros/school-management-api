@@ -163,50 +163,74 @@ class HorarioService {
             throw new Error('Período (Bimestre) não encontrado ou não pertence à sua escola.');
         }
 
+        const mode = await this._getRegularWeeklyScheduleMode(schoolId);
+        if (mode !== SCHEDULE_MODES.SHARED_ACROSS_PERIODS) {
+            const ownHorarios = await Horario.find({ ...query, school_id: schoolId })
+                .populate(defaultPopulation)
+                .sort({ dayOfWeek: 1, startTime: 1 });
+            return this._decorateOwnSchedules(ownHorarios, targetTerm);
+        }
+
+        // Grade unica no ano: cada TURMA usa a grade do periodo pedido, se
+        // tiver uma, ou a do periodo anterior mais recente que tiver. Isso e
+        // decidido pela turma inteira, antes de filtrar professor/disciplina;
+        // senao uma turma cuja grade esta num periodo mais antigo some para o
+        // professor que tem aula nela.
+        const classScope = query.classId ? { classId: query.classId } : {};
+        const classIdsIn = async (termId) => {
+            const rows = await Horario.find({ ...classScope, school_id: schoolId, termId })
+                .select('classId')
+                .lean();
+            return new Set(rows.map((row) => normalizeId(row.classId)).filter(Boolean));
+        };
+
+        const resolvedClasses = await classIdsIn(targetTermId);
         const ownHorarios = await Horario.find({ ...query, school_id: schoolId })
             .populate(defaultPopulation)
             .sort({ dayOfWeek: 1, startTime: 1 });
+        const result = this._decorateOwnSchedules(ownHorarios, targetTerm);
 
-        const mode = await this._getRegularWeeklyScheduleMode(schoolId);
-        if (mode !== SCHEDULE_MODES.SHARED_ACROSS_PERIODS) {
-            return this._decorateOwnSchedules(ownHorarios, targetTerm);
-        }
+        for (const sourceTerm of await this._baseTermCandidates(targetTerm, schoolId)) {
+            const classesInTerm = [...await classIdsIn(sourceTerm._id)]
+                .filter((classId) => !resolvedClasses.has(classId));
+            if (classesInTerm.length === 0) continue;
+            classesInTerm.forEach((classId) => resolvedClasses.add(classId));
 
-        const sourceQuery = { ...query };
-        delete sourceQuery.termId;
-
-        const { term: sourceTerm, horarios } = await this._findBaseScheduleForTerm({
-            query: sourceQuery,
-            targetTerm,
-            schoolId,
-        });
-
-        if (!sourceTerm || horarios.length === 0) {
-            return this._decorateOwnSchedules(ownHorarios, targetTerm);
-        }
-
-        const classesWithOwnSchedule = new Set(
-            ownHorarios
-                .map((horario) => normalizeId(horario.classId))
-                .filter(Boolean),
-        );
-        const inheritedWithoutOverrides = horarios.filter((horario) => {
-            const classId = normalizeId(horario.classId);
-            return classId && !classesWithOwnSchedule.has(classId);
-        });
-
-        return [
-            ...this._decorateOwnSchedules(ownHorarios, targetTerm),
-            ...this._decorateInheritedSchedules(
-                inheritedWithoutOverrides,
+            const inherited = await Horario.find({
+                ...query,
+                school_id: schoolId,
+                termId: sourceTerm._id,
+                classId: { $in: classesInTerm },
+            })
+                .populate(defaultPopulation)
+                .sort({ dayOfWeek: 1, startTime: 1 });
+            const allowed = new Set(classesInTerm);
+            result.push(...this._decorateInheritedSchedules(
+                inherited.filter((horario) => allowed.has(normalizeId(horario.classId))),
                 sourceTerm,
                 targetTerm,
-            ),
-        ].sort((left, right) => {
+            ));
+        }
+
+        return result.sort((left, right) => {
             const dayDifference = Number(left.dayOfWeek) - Number(right.dayOfWeek);
             if (dayDifference !== 0) return dayDifference;
             return String(left.startTime).localeCompare(String(right.startTime));
         });
+    }
+
+    /** Periodos anteriores (do mais recente) e depois os demais do ano. */
+    async _baseTermCandidates(targetTerm, schoolId) {
+        const terms = await this._getTermsInSameYear(targetTerm, schoolId);
+        const targetStart = new Date(targetTerm.dataInicio).getTime();
+        const others = terms.filter((term) => String(term._id) !== String(targetTerm._id));
+        const previous = others
+            .filter((term) => new Date(term.dataInicio).getTime() < targetStart)
+            .sort((left, right) => new Date(right.dataInicio) - new Date(left.dataInicio));
+        const rest = others
+            .filter((term) => !previous.includes(term))
+            .sort((left, right) => new Date(left.dataInicio) - new Date(right.dataInicio));
+        return [...previous, ...rest];
     }
 
     async _validateCopyContext({ sourceTermId, targetTermId, classId, schoolId }) {
