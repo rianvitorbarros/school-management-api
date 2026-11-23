@@ -280,6 +280,7 @@ class ActivityDesignService {
     r2StorageService = r2StorageServiceInstance,
     mediaAssetService = null,
     examService = null,
+    User = null,
     thumbnailMaker = null,
     now = () => new Date(),
   } = {}) {
@@ -289,6 +290,7 @@ class ActivityDesignService {
     this.r2StorageService = r2StorageService;
     this.mediaAssetServiceOverride = mediaAssetService;
     this.examServiceOverride = examService;
+    this.UserOverride = User;
     this.thumbnailMaker = thumbnailMaker || ((buffer) => this.makeThumbnail(buffer));
     this.now = now;
   }
@@ -297,6 +299,11 @@ class ActivityDesignService {
     // Carregado sob demanda para evitar dependencia circular nos testes.
     // eslint-disable-next-line global-require
     return this.mediaAssetServiceOverride || require('./mediaAsset.service');
+  }
+
+  get User() {
+    // eslint-disable-next-line global-require
+    return this.UserOverride || require('../models/user.model');
   }
 
   get examService() {
@@ -410,7 +417,11 @@ class ActivityDesignService {
     return { schoolId, actorId, manager: isManager(actor) };
   }
 
-  async loadDesign(designId, actor, { forWrite = false } = {}) {
+  /**
+   * `allowShared`: leitura de atividade de outro professor que ele deixou
+   * compartilhada com a escola (usado ao importar para a propria turma).
+   */
+  async loadDesign(designId, actor, { forWrite = false, allowShared = false } = {}) {
     const { schoolId, actorId, manager } = this.resolveContext(actor);
     const normalizedId = ensureObjectId(designId, 'INVALID_DESIGN_ID', 'Atividade invalida.');
     const design = await this.ActivityDesign.findOne({ _id: normalizedId, schoolId });
@@ -418,7 +429,11 @@ class ActivityDesignService {
       throw createHttpError('Atividade nao encontrada.', 404, 'DESIGN_NOT_FOUND');
     }
     const isOwner = sameId(design.createdByUserId, actorId);
-    if (!isOwner && !manager) {
+    const sharedWithSchool = allowShared
+      && !forWrite
+      && design.status !== 'archived'
+      && design.sharing !== 'private';
+    if (!isOwner && !manager && !sharedWithSchool) {
       throw createHttpError('Voce nao tem acesso a esta atividade.', 403, 'DESIGN_FORBIDDEN');
     }
     return { design, schoolId, actorId, manager };
@@ -467,6 +482,7 @@ class ActivityDesignService {
       publishedAt: plain.publishedAt || null,
       publishedPageKeys: Array.isArray(plain.publishedPageKeys) ? plain.publishedPageKeys : [],
       importedFromDesignId: plain.importedFromDesignId ? String(plain.importedFromDesignId) : null,
+      sharing: plain.sharing === 'private' ? 'private' : 'school',
       purpose: plain.purpose === 'assessment' ? 'assessment' : 'activity',
       examId: plain.examId ? String(plain.examId) : null,
       maxScore: Number.isFinite(Number(plain.maxScore)) ? Number(plain.maxScore) : 10,
@@ -490,7 +506,15 @@ class ActivityDesignService {
     const query = { schoolId, status: { $ne: 'archived' } };
 
     const scope = normalizeText(filters.scope).toLowerCase();
-    if (!(manager && scope === 'school')) {
+    // 'shared': as proprias e as que outros professores compartilharam
+    // com a escola (para importar).
+    const shared = scope === 'shared';
+    if (shared) {
+      query.$or = [
+        { createdByUserId: actorId },
+        { sharing: { $ne: 'private' } },
+      ];
+    } else if (!(manager && scope === 'school')) {
       query.createdByUserId = actorId;
     }
     if (filters.status && ['draft', 'published'].includes(String(filters.status))) {
@@ -531,7 +555,29 @@ class ActivityDesignService {
       return { ...rest, thumbnailUrl };
     }));
 
+    if (shared || scope === 'school') {
+      const names = await this.loadUserNames(summaries.map((item) => item.createdByUserId));
+      for (const item of summaries) {
+        item.createdByName = names.get(item.createdByUserId) || '';
+      }
+    }
+
     return { items: summaries, page, limit, total };
+  }
+
+  async loadUserNames(ids = []) {
+    const unique = [...new Set(ids.filter((id) => mongoose.Types.ObjectId.isValid(String(id || ''))))];
+    const names = new Map();
+    if (unique.length === 0) return names;
+    try {
+      const users = await this.User.find({ _id: { $in: unique } }).select('fullName name').lean();
+      for (const user of users) {
+        names.set(String(user._id), normalizeText(user.fullName || user.name));
+      }
+    } catch (_) {
+      // Sem nome o item continua listado.
+    }
+    return names;
   }
 
   async getDesign(designId, actor) {
@@ -553,6 +599,13 @@ class ActivityDesignService {
     if (payload.tags !== undefined) design.tags = normalizeTags(payload.tags);
     if (payload.purpose !== undefined) {
       design.purpose = payload.purpose === 'assessment' ? 'assessment' : 'activity';
+    }
+    if (payload.sharing !== undefined) {
+      const sharing = normalizeText(payload.sharing).toLowerCase();
+      if (!['private', 'school'].includes(sharing)) {
+        throw createHttpError('Compartilhamento invalido.', 400, 'INVALID_SHARING');
+      }
+      design.sharing = sharing;
     }
     if (payload.maxScore !== undefined && payload.maxScore !== null && payload.maxScore !== '') {
       const maxScore = Number(payload.maxScore);
@@ -629,7 +682,7 @@ class ActivityDesignService {
     // nao conta como alteracao a publicar.
     const metadataOnly = Object.keys(payload)
       .filter((key) => key !== 'revision')
-      .every((key) => ['purpose', 'maxScore'].includes(key));
+      .every((key) => ['purpose', 'maxScore', 'sharing'].includes(key));
     if (!metadataOnly) design.revision = Number(design.revision || 0) + 1;
     design.updatedByUserId = actorId;
     await design.save();
@@ -641,10 +694,14 @@ class ActivityDesignService {
    * para aquela turma com o mesmo titulo.
    */
   async duplicateDesign(designId, actor, options = {}) {
-    const { design, schoolId, actorId } = await this.loadDesign(designId, actor);
-    const source = typeof design.toObject === 'function' ? design.toObject({ minimize: false }) : design;
     const targetClassId = normalizeText(options.classId);
     const importing = Boolean(targetClassId);
+    // Importar para a turma vale tambem para atividade compartilhada por
+    // outro professor; a copia passa a ser de quem importou.
+    const { design, schoolId, actorId } = await this.loadDesign(designId, actor, {
+      allowShared: importing,
+    });
+    const source = typeof design.toObject === 'function' ? design.toObject({ minimize: false }) : design;
     if (importing && !mongoose.Types.ObjectId.isValid(targetClassId)) {
       throw createHttpError('Turma de destino invalida.', 400, 'INVALID_CLASS_ID');
     }

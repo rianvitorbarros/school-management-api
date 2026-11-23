@@ -138,6 +138,9 @@ const activityDesignSchema = new Schema(
     publishedPageKeys: { type: [String], default: [] },
     // Atividade de origem quando importada de outra turma.
     importedFromDesignId: { type: Schema.Types.ObjectId, ref: 'ActivityDesign', default: null },
+    // 'school' = outros professores da escola podem importar;
+    // 'private' = so o autor (e a coordenacao).
+    sharing: { type: String, enum: ['private', 'school'], default: 'school' },
     archivedAt: { type: Date, default: null },
   },
   { timestamps: true, minimize: false }
