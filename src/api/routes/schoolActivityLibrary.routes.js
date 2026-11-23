@@ -1,9 +1,20 @@
 const express = require('express');
+const multer = require('multer');
 
 const { verifyToken } = require('../middlewares/auth.middleware');
 const { verifySchoolAccess } = require('../middlewares/schoolAccess.middleware');
 const activityLibraryService = require('../services/activityLibrary.service');
 const activityPrintService = require('../services/activityPrint.service');
+const pdfMergeService = require('../services/pdfMerge.service');
+
+const mergeUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 40 * 1024 * 1024,
+    files: pdfMergeService.MAX_FILES,
+    fieldSize: 256 * 1024,
+  },
+});
 
 const router = express.Router();
 
@@ -74,6 +85,35 @@ router.post('/:activityPageId/preview', async (req, res) => {
       code: error.code || 'ACTIVITY_PREVIEW_ERROR',
     });
   }
+});
+
+// Impressao oficial de varias avaliacoes num PDF so: o app gera as folhas de
+// cada uma (com o nome e o QR Code de cada aluno) e o servidor junta.
+router.post('/merge-pdf', (req, res) => {
+  mergeUpload.array('files', pdfMergeService.MAX_FILES)(req, res, async (uploadError) => {
+    if (uploadError) {
+      return res.status(400).json({
+        message: uploadError.code === 'LIMIT_FILE_SIZE'
+          ? 'Um dos PDFs passou de 40 MB.'
+          : 'Nao foi possivel receber os PDFs.',
+        code: 'PDF_UPLOAD_ERROR',
+      });
+    }
+    try {
+      const pdf = await pdfMergeService.mergePdfs(
+        (req.files || []).map((file) => file.buffer),
+        req.body?.layout,
+      );
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).send(pdf);
+    } catch (error) {
+      return res.status(error.status || error.statusCode || 500).json({
+        message: error.message || 'Erro ao juntar os PDFs.',
+        code: error.code || 'PDF_MERGE_ERROR',
+      });
+    }
+  });
 });
 
 module.exports = router;
