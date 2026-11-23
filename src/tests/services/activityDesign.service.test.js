@@ -543,3 +543,100 @@ test('trocar so o tipo nao marca alteracoes a publicar', async () => {
   assert.equal(changed.revision, saved.revision);
   assert.equal(changed.hasUnpublishedChanges, false);
 });
+
+test('importar atividade compartilhada por outro professor: copia vira de quem importou', async () => {
+  const { service, teacher, otherTeacher } = createHarness();
+  const created = await service.createDesign(teacher, {
+    title: 'Prova de ciencias 1B',
+    classId: '64b000000000000000000001',
+    purpose: 'assessment',
+  });
+
+  // Compartilhada (padrao): o colega importa para a turma dele.
+  const imported = await service.duplicateDesign(created.id, otherTeacher, {
+    classId: '64b000000000000000000002',
+  });
+  assert.equal(imported.createdByUserId, otherTeacher.id);
+  assert.equal(imported.classId, '64b000000000000000000002');
+  assert.equal(imported.importedFromDesignId, created.id);
+  assert.equal(imported.purpose, 'assessment');
+  assert.equal(imported.examId, null);
+
+  // Sem turma de destino (duplicar) continua so para o dono.
+  await assert.rejects(
+    service.duplicateDesign(created.id, otherTeacher),
+    (error) => error.status === 403
+  );
+  // E o colega nao pode editar a original.
+  await assert.rejects(
+    service.updateDesign(created.id, otherTeacher, { title: 'x' }),
+    (error) => error.status === 403
+  );
+});
+
+test('atividade privada nao pode ser importada por outro professor', async () => {
+  const { service, teacher, otherTeacher, manager } = createHarness();
+  const created = await service.createDesign(teacher, { title: 'Minha prova' });
+  const updated = await service.updateDesign(created.id, teacher, { sharing: 'private' });
+  assert.equal(updated.sharing, 'private');
+  // Trocar o compartilhamento nao conta como alteracao a publicar.
+  assert.equal(updated.revision, created.revision);
+
+  await assert.rejects(
+    service.duplicateDesign(created.id, otherTeacher, { classId: '64b000000000000000000002' }),
+    (error) => error.status === 403
+  );
+  // Coordenacao continua podendo.
+  const byManager = await service.duplicateDesign(created.id, manager, { classId: '64b000000000000000000002' });
+  assert.equal(byManager.title, 'Minha prova');
+
+  await assert.rejects(
+    service.updateDesign(created.id, teacher, { sharing: 'todo-mundo' }),
+    (error) => error.code === 'INVALID_SHARING'
+  );
+});
+
+test('listDesigns scope=shared traz as proprias e as compartilhadas, com o nome do autor', async () => {
+  const schoolId = new mongoose.Types.ObjectId();
+  const me = new mongoose.Types.ObjectId();
+  const colleague = new mongoose.Types.ObjectId();
+  let lastQuery = null;
+  const docs = [
+    { _id: new mongoose.Types.ObjectId(), schoolId, createdByUserId: colleague, title: 'Da colega', status: 'draft', pages: [] },
+  ];
+  const FakeDesign = {
+    find(query) {
+      lastQuery = query;
+      return {
+        select() { return this; },
+        sort() { return this; },
+        skip() { return this; },
+        limit() { return Promise.resolve(docs); },
+      };
+    },
+    async countDocuments() { return docs.length; },
+  };
+  const FakeUser = {
+    find() {
+      return {
+        select() { return this; },
+        lean: async () => [{ _id: colleague, fullName: 'Maria Souza' }],
+      };
+    },
+  };
+  const service = new ActivityDesignService({ ActivityDesign: FakeDesign, User: FakeUser });
+  const actor = { id: String(me), school_id: String(schoolId), role: 'professor' };
+
+  const result = await service.listDesigns(actor, { scope: 'shared' });
+  assert.deepEqual(lastQuery.$or, [
+    { createdByUserId: String(me) },
+    { sharing: { $ne: 'private' } },
+  ]);
+  assert.equal(lastQuery.createdByUserId, undefined);
+  assert.equal(result.items[0].createdByName, 'Maria Souza');
+  assert.equal(result.items[0].sharing, 'school');
+
+  await service.listDesigns(actor, {});
+  assert.equal(lastQuery.createdByUserId, String(me));
+  assert.equal(lastQuery.$or, undefined);
+});

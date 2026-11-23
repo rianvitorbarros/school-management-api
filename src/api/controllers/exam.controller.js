@@ -757,7 +757,7 @@ class ExamController {
     async getReusable(req, res) {
         try {
             const schoolId = req.user.school_id;
-            const exams = await examService.getReusableExams(req.query, schoolId);
+            const exams = await examService.getReusableExams(req.query, schoolId, req.user);
             res.status(200).json(exams);
         } catch (error) {
             console.error('ERRO AO BUSCAR PROVAS REUTILIZAVEIS:', error);
@@ -777,13 +777,30 @@ class ExamController {
                 targetClassId,
                 schoolId,
                 userId,
-                reuseFromAnotherClass
+                reuseFromAnotherClass,
+                req.user
             );
 
             res.status(201).json(reusedExam);
         } catch (error) {
             console.error('ERRO AO REUTILIZAR PROVA:', error.message);
-            res.status(400).json({ message: error.message });
+            res.status(error.statusCode || error.status || 400).json({ message: error.message });
+        }
+    }
+
+    async setSharing(req, res) {
+        try {
+            const schoolId = req.user.school_id;
+            const result = await examService.setExamSharing(
+                req.params.id,
+                req.body?.sharing,
+                schoolId,
+                req.user
+            );
+            res.status(200).json(result);
+        } catch (error) {
+            console.error('ERRO AO ALTERAR COMPARTILHAMENTO DA PROVA:', error.message);
+            res.status(error.statusCode || error.status || 400).json({ message: error.message });
         }
     }
 

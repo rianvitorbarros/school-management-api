@@ -86,6 +86,9 @@ const examSchema = new Schema({
     reusedFromClassId: { type: Schema.Types.ObjectId, ref: 'Class', default: null },
     reusedAt: { type: Date, default: null },
     reusedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    // 'school' = outros professores da escola podem importar esta prova;
+    // 'private' = so o autor (e a coordenacao) enxerga.
+    sharing: { type: String, enum: ['private', 'school'], default: 'school' },
 
     status: {
         type: String,

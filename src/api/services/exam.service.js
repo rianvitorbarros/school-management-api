@@ -1233,13 +1233,24 @@ class ExamService {
         })));
     }
 
-    async getReusableExams(query, schoolId) {
+    async getReusableExams(query, schoolId, actor = null) {
         const targetClass = await this._ensureClassBelongsToSchool(query?.targetClassId, schoolId);
+        const actorId = extractId(actor?.id || actor?._id);
+        // Com includeShared, vem as provas do proprio professor e as que
+        // outros professores da escola deixaram compartilhadas.
+        const includeShared = toBooleanQuery(query?.includeShared) && Boolean(actorId);
 
         const filter = {
             school_id: schoolId,
             class_id: { $ne: targetClass._id },
         };
+
+        if (includeShared) {
+            filter.$or = [
+                { teacher_id: actorId },
+                { sharing: { $ne: 'private' } },
+            ];
+        }
 
         if (query?.sourceClassId) {
             const sourceClass = await this._ensureClassBelongsToSchool(query.sourceClassId, schoolId);
@@ -1250,7 +1261,7 @@ class ExamService {
             filter.subject_id = query.subject_id || query.subjectId;
         }
 
-        if (query?.teacher_id || query?.teacherId) {
+        if (!includeShared && (query?.teacher_id || query?.teacherId)) {
             filter.teacher_id = query.teacher_id || query.teacherId;
         }
 
@@ -1264,14 +1275,45 @@ class ExamService {
             ? true
             : toBooleanQuery(query.includeQuestions);
 
+        // Professor e quem reutilizou: so o nome (a lista vai para outros
+        // professores da escola).
         const exams = await Exam.find(filter)
             .sort({ applicationDate: -1, createdAt: -1 })
-            .populate('class_id subject_id teacher_id termId reusedFromExamId reusedFromClassId reusedBy settings.evaluationId');
+            .populate('class_id subject_id termId reusedFromExamId reusedFromClassId settings.evaluationId')
+            .populate('teacher_id', 'fullName name')
+            .populate('reusedBy', 'fullName name');
 
         return Promise.all(exams.map(async (exam) => ({
             ...this._serializeExamForList(exam, { includeQuestions }),
             ...(await this._resolveStoredExamTermContext(exam, schoolId)),
         })));
+    }
+
+    /**
+     * Define se outros professores da escola podem importar a prova.
+     * So o autor da prova ou a coordenacao podem mudar.
+     */
+    async setExamSharing(examId, sharing, schoolId, actor) {
+        this._ensureValidObjectId(examId, 'ID da prova');
+        const normalized = String(sharing || '').trim().toLowerCase();
+        if (!['private', 'school'].includes(normalized)) {
+            throw createHttpError('Compartilhamento invalido. Use "private" ou "school".', 400);
+        }
+
+        const exam = await Exam.findOne({ _id: examId, school_id: schoolId })
+            .select('_id teacher_id sharing')
+            .lean();
+        if (!exam) {
+            throw createHttpError('Prova nao encontrada.', 404);
+        }
+
+        const actorId = extractId(actor?.id || actor?._id);
+        if (!isPrivilegedActor(actor) && getObjectIdString(exam.teacher_id) !== actorId) {
+            throw createHttpError('So o professor que criou a prova pode mudar o compartilhamento.', 403);
+        }
+
+        await Exam.updateOne({ _id: exam._id }, { $set: { sharing: normalized } });
+        return { _id: String(exam._id), sharing: normalized };
     }
 
     async getExamById(id, schoolId) {
@@ -1286,7 +1328,7 @@ class ExamService {
         return this._serializeExamForResponse(exam, schoolId);
     }
 
-    async reuseExamForClass(sourceExamId, targetClassId, schoolId, userId, reuseFromAnotherClass = false) {
+    async reuseExamForClass(sourceExamId, targetClassId, schoolId, userId, reuseFromAnotherClass = false, actor = null) {
         this._logInfo('Reutilizando prova para outra turma.', {
             sourceExamId,
             targetClassId,
@@ -1313,9 +1355,19 @@ class ExamService {
             throw new Error('Confirme explicitamente a reutilizaÃ§Ã£o de prova de outra turma.');
         }
 
+        // Prova de outro professor: so se ele deixou compartilhada, e a copia
+        // passa a ser de quem importou (aparece na Central de Provas dele).
+        const actorId = extractId(userId);
+        const ownedByActor = Boolean(actorId) && getObjectIdString(sourceExam.teacher_id) === actorId;
+        const privileged = actor ? isPrivilegedActor(actor) : false;
+        const importingFromColleague = !ownedByActor && !privileged && Boolean(actorId);
+        if (importingFromColleague && sourceExam.sharing === 'private') {
+            throw createHttpError('Esta prova e privada do professor que a criou.', 403);
+        }
+
         const reusedExam = new Exam({
             school_id: schoolId,
-            teacher_id: sourceExam.teacher_id,
+            teacher_id: importingFromColleague ? actorId : sourceExam.teacher_id,
             class_id: targetClass._id,
             subject_id: sourceExam.subject_id,
             schoolyear_id: sourceExam.schoolyear_id || null,
