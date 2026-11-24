@@ -50,3 +50,33 @@ test('zero is a valid published common price and stays distinct from missing pub
     assert.equal((await service.publishedForDestination('school', 2027, { level: common.level, grade: '2º Período', shift: 'Vespertino' })).cents, 0);
   });
 });
+
+test('saving a draft over a legacy grade alias does not raise a false version conflict', async () => {
+  const Class = require('../../api/models/class.model');
+  const AuditLog = require('../../api/models/auditLog.model');
+  const level = 'Ensino Fundamental I';
+  const saved = [];
+  const mk = (id, grade, updatedAt) => ({ _id: id, academicYear: 2027, level, grade, shift: 'Matutino', draftCents: 45000, publishedCents: 45000, publishedVersion: 1, updatedAt: new Date(updatedAt), save: async function () { saved.push(this._id); this.updatedAt = new Date(); } });
+  // The canonical plan is listed first and the stale alias last, so a
+  // "last wins" overview and a "first wins" save resolve different records.
+  const plans = [mk('canonical', '1º Ano', '2026-11-20T10:00:00Z'), mk('alias', '1° ANO', '2026-01-10T10:00:00Z')];
+  const classes = [{ _id: 'c1', name: '1º ANO A', level, grade: '1º Ano', shift: 'Matutino', schoolYear: 2026, monthlyFee: 400 }];
+  const originals = { plan: Plan.find, cls: Class.find, audit: AuditLog.create };
+  const chain = (items) => ({ select: () => ({ lean: async () => items, sort: () => ({ lean: async () => items }) }) });
+  Plan.find = (query) => {
+    const items = plans.filter((p) => !query.level || (p.level === query.level && p.shift === query.shift));
+    return Object.assign(Promise.resolve(items), { lean: async () => items });
+  };
+  Class.find = (query) => chain(typeof query.schoolYear === 'number' ? [] : classes);
+  AuditLog.create = async () => ({});
+  try {
+    const overview = await service.overview('school', 2027);
+    const row = overview.rows[0];
+    assert.equal(row.id, 'canonical');
+    await service.saveDraft('school', 'actor', { academicYear: 2027, rows: [{ level, grade: row.grade, shift: row.shift, draftValue: 460, updatedAt: row.updatedAt }] });
+    assert.deepEqual(saved, ['canonical']);
+    assert.equal(plans[0].draftCents, 46000);
+  } finally {
+    Plan.find = originals.plan; Class.find = originals.cls; AuditLog.create = originals.audit;
+  }
+});

@@ -20,6 +20,29 @@ const toCents = (value) => {
   if (!Number.isFinite(amount) || amount < 0) throw Object.assign(new Error('Mensalidade inválida.'), { statusCode: 400, code: 'INVALID_MONTHLY_FEE' });
   return Math.round(amount * 100);
 };
+// Legacy catalogues can hold several plan documents for the same academic key
+// (e.g. raw alias "1° ANO" next to canonical "1º Ano"). Reading and saving must
+// resolve the SAME document, otherwise the optimistic-concurrency check compares
+// timestamps of different records and every save fails as a false conflict.
+const selectPlan = (plans) => {
+  if (!plans.length) return null;
+  return plans.slice().sort((a, b) => {
+    const canonicalA = String(a.grade || '').trim() === normalizeGrade(a.grade) ? 1 : 0;
+    const canonicalB = String(b.grade || '').trim() === normalizeGrade(b.grade) ? 1 : 0;
+    if (canonicalA !== canonicalB) return canonicalB - canonicalA;
+    const updated = new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0);
+    return updated || String(a._id).localeCompare(String(b._id));
+  })[0];
+};
+const plansByKey = (plans) => {
+  const groups = new Map();
+  for (const plan of plans) {
+    const key = keyOf(plan);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(plan);
+  }
+  return new Map([...groups].map(([key, items]) => [key, selectPlan(items)]));
+};
 const money = (cents) => cents === null || cents === undefined ? null : Number((cents / 100).toFixed(2));
 const publicPlan = (item) => ({
   id: String(item._id), academicYear: item.academicYear, level: item.level, grade: item.grade, shift: item.shift,
@@ -44,7 +67,7 @@ class AcademicMonthlyFeePlanService {
       Class.find({ school_id: schoolId, schoolYear: { $lt: year }, ...academicClassVisibilityFilter }).select('+monthlyFee').sort({ schoolYear: -1 }).lean(),
       AcademicMonthlyFeePlan.find({ school_id: schoolId, academicYear: year }).lean(),
     ]);
-    const planByKey = new Map(plans.map((plan) => [keyOf(plan), plan]));
+    const planByKey = plansByKey(plans);
     const currentByKey = new Map();
     for (const item of priorClasses) {
       if (!currentByKey.has(keyOf(item))) currentByKey.set(keyOf(item), item);
@@ -86,7 +109,7 @@ class AcademicMonthlyFeePlanService {
     for (const row of uniqueRows) {
       if (!row.level || !row.grade || !row.shift) throw Object.assign(new Error('Série, segmento e turno são obrigatórios.'), { statusCode: 400, code: 'INVALID_PRICING_KEY' });
       const candidates = await AcademicMonthlyFeePlan.find({ school_id: schoolId, academicYear: year, level: row.level, shift: row.shift });
-      const existing = candidates.find((item) => keyOf(item) === keyOf(row)) || null;
+      const existing = selectPlan(candidates.filter((item) => keyOf(item) === keyOf(row)));
       if (row.updatedAt && existing && new Date(row.updatedAt).getTime() !== new Date(existing.updatedAt).getTime()) throw Object.assign(new Error('Este planejamento foi alterado por outro usuário. Atualize a tela antes de salvar.'), { statusCode: 409, code: 'PRICING_VERSION_CONFLICT' });
       const previous = existing ? publicPlan(existing) : null;
       const plan = existing || new AcademicMonthlyFeePlan({ school_id: schoolId, academicYear: year, level: row.level, grade: row.grade, shift: row.shift });
