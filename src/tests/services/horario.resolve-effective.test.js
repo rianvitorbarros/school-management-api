@@ -162,3 +162,59 @@ test('grade unica: turma com grade so num bimestre mais antigo nao some para o p
   assert.ok(result.every((item) => item.teacherId._id === 'juliana'));
   assert.ok(result.every((item) => item.isInherited));
 });
+
+test('grade unica: aula avulsa num bimestre mais novo nao esconde o resto da grade da turma', async (t) => {
+  // Caso real (2o ANO A): grade inteira no 1o bim; no 2o bim alguem lancou
+  // so 1 aula de outra professora. No 4o bim (atual) nada foi lancado.
+  const terms = [
+    { _id: 'term-1', anoLetivoId: SCHOOL_YEAR_ID, titulo: '1o', dataInicio: new Date('2026-03-16') },
+    { _id: 'term-2', anoLetivoId: SCHOOL_YEAR_ID, titulo: '2o', dataInicio: new Date('2026-04-01') },
+    { _id: 'term-4', anoLetivoId: SCHOOL_YEAR_ID, titulo: '4o', dataInicio: new Date('2026-11-01') },
+  ];
+  const slot = (id, classId, termId, teacherId, dayOfWeek, startTime, endTime) => ({
+    ...schedule(id, classId, termId),
+    teacherId: { _id: teacherId, fullName: teacherId },
+    dayOfWeek,
+    startTime,
+    endTime,
+  });
+  const all = [
+    slot('a-seg-1', '2A', 'term-1', 'edicelia', 1, '07:00', '07:50'),
+    slot('a-seg-2', '2A', 'term-1', 'edicelia', 1, '07:50', '08:40'),
+    slot('a-ter-1', '2A', 'term-1', 'outro', 2, '09:00', '09:50'),
+    // Aula avulsa do 2o bim: substitui so a terca 09:00.
+    slot('a-ter-2bim', '2A', 'term-2', 'elisangela', 2, '09:10', '10:00'),
+    slot('b-seg-1', '2B', 'term-1', 'edicelia', 1, '07:00', '07:50'),
+  ];
+  const idOf = (value) => String(value?._id ?? value);
+  const matches = (doc, query) => Object.entries(query).every(([key, value]) => {
+    if (key === 'school_id') return true;
+    if (value && typeof value === 'object' && Array.isArray(value.$in)) {
+      return value.$in.map(String).includes(idOf(doc[key]));
+    }
+    return idOf(doc[key]) === String(value);
+  });
+
+  t.mock.method(Term, 'findOne', () => queryResult(terms[2]));
+  t.mock.method(Term, 'find', () => queryResult(terms));
+  t.mock.method(School, 'findById', () =>
+    queryResult({ academicSettings: { regularWeeklyScheduleMode: 'shared_across_periods' } }),
+  );
+  t.mock.method(Horario, 'find', (query) => queryResult(all.filter((doc) => matches(doc, query))));
+
+  const mine = await horarioService.resolveEffectiveHorarios(
+    { termId: 'term-4', teacherId: 'edicelia' },
+    SCHOOL_ID,
+  );
+  assert.deepEqual(mine.map((item) => item._id).sort(), ['a-seg-1', 'a-seg-2', 'b-seg-1']);
+  assert.deepEqual([...new Set(mine.map((item) => item.classId._id))].sort(), ['2A', '2B']);
+  assert.ok(mine.every((item) => item.isInherited && item.resolvedFromTermId === 'term-1'));
+
+  // A turma inteira: a aula do 2o bim substitui a de terca do 1o bim.
+  const turma = await horarioService.resolveEffectiveHorarios(
+    { termId: 'term-4', classId: '2A' },
+    SCHOOL_ID,
+  );
+  assert.deepEqual(turma.map((item) => item._id).sort(), ['a-seg-1', 'a-seg-2', 'a-ter-2bim']);
+  assert.equal(turma.find((item) => item._id === 'a-ter-2bim').resolvedFromTermId, 'term-2');
+});
