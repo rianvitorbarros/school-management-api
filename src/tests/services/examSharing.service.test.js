@@ -89,8 +89,10 @@ test('getReusableExams com includeShared traz as proprias e as compartilhadas', 
   const schoolId = oid();
   const me = oid();
   let filter = null;
+  let diskUse = null;
   const chain = {
     sort() { return this; },
+    allowDiskUse(value) { diskUse = value; return this; },
     populate() { return this; },
     then(resolve) { resolve([]); },
   };
@@ -107,6 +109,8 @@ test('getReusableExams com includeShared traz as proprias e as compartilhadas', 
     );
     assert.deepEqual(filter.$or, [{ teacher_id: String(me) }, { sharing: { $ne: 'private' } }]);
     assert.equal(filter.teacher_id, undefined);
+    // A ordenacao pode ir para o disco (escolas com muitas provas).
+    assert.equal(diskUse, true);
 
     // Sem includeShared continua como antes (so o professor informado).
     await examService.getReusableExams({ targetClassId: String(oid()), teacher_id: String(me) }, schoolId, actor);

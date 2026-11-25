@@ -1225,6 +1225,7 @@ class ExamService {
 
         const exams = await Exam.find(filter)
             .sort({ applicationDate: -1, createdAt: -1 })
+            .allowDiskUse(true)
             .populate('class_id subject_id teacher_id termId reusedFromExamId reusedFromClassId reusedBy settings.evaluationId');
 
         return Promise.all(exams.map(async (exam) => ({
@@ -1279,6 +1280,8 @@ class ExamService {
         // professores da escola).
         const exams = await Exam.find(filter)
             .sort({ applicationDate: -1, createdAt: -1 })
+            // Escolas com muitas provas passam de 32 MB na ordenacao em memoria.
+            .allowDiskUse(true)
             .populate('class_id subject_id termId reusedFromExamId reusedFromClassId settings.evaluationId')
             .populate('teacher_id', 'fullName name')
             .populate('reusedBy', 'fullName name');
