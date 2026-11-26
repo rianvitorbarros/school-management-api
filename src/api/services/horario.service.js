@@ -55,6 +55,28 @@ function formatTermName(term) {
     return term?.titulo || term?.name || null;
 }
 
+function timeToMinutes(value) {
+    const match = /^(\d{1,2}):(\d{2})/.exec(String(value || '').trim());
+    return match ? Number(match[1]) * 60 + Number(match[2]) : null;
+}
+
+/** Dia e intervalo (em minutos) de um horario da grade. */
+function slotInterval(slot) {
+    const start = timeToMinutes(slot.startTime);
+    const end = timeToMinutes(slot.endTime);
+    const safeStart = start ?? 0;
+    return {
+        day: Number(slot.dayOfWeek),
+        start: safeStart,
+        // Sem fim valido, ocupa ao menos o minuto de inicio.
+        end: end !== null && end > safeStart ? end : safeStart + 1,
+    };
+}
+
+function intervalsOverlap(left, right) {
+    return left.day === right.day && left.start < right.end && right.start < left.end;
+}
+
 class HorarioService {
 
     _sanitizeFilter(filter = {}) {
@@ -171,42 +193,58 @@ class HorarioService {
             return this._decorateOwnSchedules(ownHorarios, targetTerm);
         }
 
-        // Grade unica no ano: cada TURMA usa a grade do periodo pedido, se
-        // tiver uma, ou a do periodo anterior mais recente que tiver. Isso e
-        // decidido pela turma inteira, antes de filtrar professor/disciplina;
-        // senao uma turma cuja grade esta num periodo mais antigo some para o
-        // professor que tem aula nela.
+        // Grade unica no ano: a grade de cada turma e montada por HORARIO.
+        // Vale o que foi lancado no periodo pedido; os horarios dos periodos
+        // anteriores (do mais recente para o mais antigo) preenchem os
+        // espacos (dia + intervalo) que ainda nao tem aula. Isso e decidido
+        // com a grade inteira da turma, antes de filtrar professor/disciplina:
+        // assim uma aula avulsa lancada num periodo mais novo substitui so o
+        // proprio horario, e nao esconde o resto da grade (e as turmas) do
+        // professor.
         const classScope = query.classId ? { classId: query.classId } : {};
-        const classIdsIn = async (termId) => {
-            const rows = await Horario.find({ ...classScope, school_id: schoolId, termId })
-                .select('classId')
-                .lean();
-            return new Set(rows.map((row) => normalizeId(row.classId)).filter(Boolean));
+        const slotsIn = (termId) => Horario.find({ ...classScope, school_id: schoolId, termId })
+            .select('_id classId dayOfWeek startTime endTime')
+            .lean();
+
+        const occupied = new Map();
+        const occupy = (slot) => {
+            const classId = normalizeId(slot.classId);
+            if (!classId) return;
+            if (!occupied.has(classId)) occupied.set(classId, []);
+            occupied.get(classId).push(slotInterval(slot));
+        };
+        const isFree = (slot) => {
+            const taken = occupied.get(normalizeId(slot.classId)) || [];
+            const interval = slotInterval(slot);
+            return !taken.some((other) => intervalsOverlap(other, interval));
         };
 
-        const resolvedClasses = await classIdsIn(targetTermId);
+        (await slotsIn(targetTermId)).forEach(occupy);
+
         const ownHorarios = await Horario.find({ ...query, school_id: schoolId })
             .populate(defaultPopulation)
             .sort({ dayOfWeek: 1, startTime: 1 });
         const result = this._decorateOwnSchedules(ownHorarios, targetTerm);
 
         for (const sourceTerm of await this._baseTermCandidates(targetTerm, schoolId)) {
-            const classesInTerm = [...await classIdsIn(sourceTerm._id)]
-                .filter((classId) => !resolvedClasses.has(classId));
-            if (classesInTerm.length === 0) continue;
-            classesInTerm.forEach((classId) => resolvedClasses.add(classId));
+            // Compara com o que ja estava ocupado ANTES deste periodo, para
+            // os horarios do proprio periodo nao se excluirem entre si.
+            const chosen = (await slotsIn(sourceTerm._id))
+                .filter((slot) => normalizeId(slot.classId) && isFree(slot));
+            if (chosen.length === 0) continue;
+            chosen.forEach(occupy);
 
+            const allowed = new Set(chosen.map((slot) => normalizeId(slot._id)));
             const inherited = await Horario.find({
                 ...query,
                 school_id: schoolId,
                 termId: sourceTerm._id,
-                classId: { $in: classesInTerm },
+                _id: { $in: [...allowed] },
             })
                 .populate(defaultPopulation)
                 .sort({ dayOfWeek: 1, startTime: 1 });
-            const allowed = new Set(classesInTerm);
             result.push(...this._decorateInheritedSchedules(
-                inherited.filter((horario) => allowed.has(normalizeId(horario.classId))),
+                inherited.filter((horario) => allowed.has(normalizeId(horario._id))),
                 sourceTerm,
                 targetTerm,
             ));
